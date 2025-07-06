@@ -15,6 +15,8 @@
 #define WINDOW_WIDTH 500
 #define WINDOW_HEIGHT 500
 
+#define LOGICAL_GPU_COUNT 1
+
 #define TRUE 1
 #define FALSE 0
 
@@ -69,6 +71,7 @@ struct vulkan_instance_details {
   VkPhysicalDevice physical_gpu;
   VkDevice *logical_gpus;
   size_t logical_gpus_count;
+  size_t logical_gpus_capacity;
   int qf_index;
 };
 
@@ -383,7 +386,8 @@ int new_logical_gpu(struct vulkan_instance_details *vk_details,
   d_info.enabledLayerCount = 0;
 #endif
 
-  // TODO: allocate vk_details->logical_gpus
+  if (NULL == vk_details->logical_gpus || vk_details->logical_gpus_count >= vk_details->logical_gpus_capacity)
+    return !VK_SUCCESS;
 
   VkResult res =
       vkCreateDevice(vk_details->physical_gpu, &d_info, NULL,
@@ -441,6 +445,9 @@ int main() {
 #ifdef DEBUG
   fprintf(stderr, "Vulkan surface created successfully.\n");
 #endif
+
+  vk_details.logical_gpus_capacity = LOGICAL_GPU_COUNT;
+  vk_details.logical_gpus = (VkDevice*)calloc(vk_details.logical_gpus_capacity, sizeof(VkDevice));
 
   {
     VkPhysicalDeviceFeatures features;
