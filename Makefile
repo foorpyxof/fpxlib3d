@@ -1,20 +1,27 @@
-.PHONY: debug release all
-
-SOURCE_FILES = main.c vk.c
+.PHONY: debug release all compile clean
 
 CC = clang
-CFLAGS = -std=c17 -O0 -g -xc
+CFLAGS = -std=c17
 LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi
-
-FILENAME = release
 
 all:
 	$(MAKE) release
 	$(MAKE) debug
 
-release:
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(SOURCE_FILES) -o $(FILENAME).out
+release: EXTRA_FLAGS = -O3
+release: FILENAME = release
+release: main
 
-debug: EXTRA_FLAGS = -DDEBUG
+debug: EXTRA_FLAGS = -DDEBUG -Og -g
 debug: FILENAME = debug
-debug: release
+debug: main
+
+vk.o:
+	$(CC) $(CFLAGS) -c $(EXTRA_FLAGS) vk.c -o $@
+
+main: vk.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) main.c $^ -o $(FILENAME).out
+
+clean:
+	rm *.o 2>/dev/null || true
+	rm *.out 2>/dev/null || true
