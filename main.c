@@ -1,11 +1,41 @@
 #include "vk.h"
 
 #include <GLFW/glfw3.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <unistd.h>
+#include <vulkan/vulkan_core.h>
 
 #define LOGICAL_GPU_COUNT 1
+
+window_context w_ctx = {.glfw_window = NULL,
+                        .window_dimensions = {500, 500},
+                        .window_title = "sugma balls"};
+
+static void sig_catcher(int signo) {
+  const char *type = NULL;
+  switch (signo) {
+  case SIGINT:
+    type = "Interrupt ";
+    break;
+  case SIGKILL:
+    type = "Kill ";
+    break;
+
+  case SIGABRT:
+    type = "Abort ";
+    break;
+
+  default:
+    return;
+  }
+
+  fprintf(stderr, "%ssignal received. Exiting\n", type);
+  destroy_vulkan_window(&w_ctx);
+
+  exit(128 + signo);
+}
 
 VkSurfaceFormatKHR formats[] = {
     {.format = VK_FORMAT_B8G8R8A8_SRGB,
@@ -84,7 +114,8 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
     }
 
 #ifdef DEBUG
-    fprintf(stderr, "Successfully created Vulkan instance + window\n");
+    fprintf(stderr,
+            "Successfully created Vulkan instance, window and surface\n");
 #endif
   }
 
@@ -96,6 +127,9 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
       fprintf(stderr, "Could not find a suitable GPU to use.\n");
       return success;
     } else {
+#ifdef DEBUG
+      fprintf(stderr, "Successfully picked a GPU to use\n");
+#endif
       VkPhysicalDeviceProperties prop;
       vkGetPhysicalDeviceProperties(vk_ctx->physical_gpu, &prop);
       fprintf(stderr, "Using Vulkan GPU \"%s\"\n", prop.deviceName);
@@ -114,7 +148,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
     vk_ctx->lg_capacity = LOGICAL_GPU_COUNT;
 
     VkPhysicalDeviceFeatures features = {0};
-    lgpu_index = new_logical_vulkan_gpu(vk_ctx, 1.0f, &features, 1, 1);
+    lgpu_index = new_logical_vulkan_gpu(vk_ctx, 1.0f, features, 1, 1);
 
     if (0 > lgpu_index) {
       // failure
@@ -122,6 +156,10 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
               lgpu_index);
       return lgpu_index;
     }
+
+#ifdef DEBUG
+    fprintf(stderr, "Successfully created a logical GPU device\n");
+#endif
   }
 
   struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[lgpu_index];
@@ -136,6 +174,10 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
       return EXIT_FAILURE;
   }
 
+#ifdef DEBUG
+  fprintf(stderr, "Successfully created Vulkan queues\n");
+#endif
+
   {
     struct swapchain_details details = swapchain_compatibility(
         vk_ctx->physical_gpu, vk_ctx->vk_surface, &sc_reqs);
@@ -143,15 +185,102 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
 
     if (VK_SUCCESS == success) {
 #ifdef DEBUG
-      fprintf(stderr, "Swap chain created successfully.\n");
+      fprintf(stderr, "Successfully created swap chain\n");
 #endif
     }
   }
+
+  struct spirv_file triangle_vertex_shader =
+      read_spirv("shaders/triangle.vert.spv", VERTEX);
+
+  struct spirv_file triangle_fragment_shader =
+      read_spirv("shaders/triangle.frag.spv", FRAGMENT);
+
+  if (NULL == triangle_vertex_shader.buffer ||
+      NULL == triangle_fragment_shader.buffer) {
+    fprintf(stderr, "Failed to load compiled shaders\n");
+  }
+
+  struct spirv_file spirvs[] = {triangle_vertex_shader,
+                                triangle_fragment_shader};
+
+  struct shader_set shader_set = {0};
+
+  // allocate room for one pipeline
+  allocate_pipelines(vk_ctx, 0, 1);
+
+  {
+    VkRenderPass pass = create_render_pass(vk_ctx, 0);
+
+    if (VK_NULL_HANDLE == pass) {
+#ifdef DEBUG
+      fprintf(stderr, "Could not create render pass\n");
+#endif
+      return -1;
+    }
+
+    set_render_pass(vk_ctx, 0, 0, pass);
+
+    {
+      int success = create_graphics_pipeline(
+          vk_ctx, 0, 0, spirvs, sizeof(spirvs) / sizeof(*spirvs), &shader_set);
+
+      if (0 != success) {
+#ifdef DEBUG
+        fprintf(stderr, "Could not create graphics pipeline\n");
+#endif
+        return success;
+      }
+    }
+
+#ifdef DEBUG
+    fprintf(stderr, "Successfully created graphics pipeline\n");
+#endif
+  }
+
+  {
+    int success = create_framebuffers(vk_ctx, 0, 0);
+    if (0 != success) {
+#ifdef DEBUG
+      fprintf(stderr, "Could not create framebuffers for swapchain\n");
+#endif
+      return success;
+    }
+  }
+
+  {
+    int success = create_command_pool(vk_ctx, 0);
+    if (0 != success) {
+#ifdef DEBUG
+      fprintf(stderr, "Could not create command pool\n");
+#endif
+      return success;
+    }
+  }
+
+  {
+    int success = create_command_buffers(vk_ctx, 0, 1);
+    if (0 != success) {
+#ifdef DEBUG
+      fprintf(stderr, "Could not create command buffer\n");
+#endif
+      return success;
+    }
+  }
+
+#ifdef DEBUG
+  fprintf(stderr, "Successfully created framebuffers and command buffers\n");
+#endif
 
   return 0;
 }
 
 int main() {
+
+  signal(SIGINT, sig_catcher);
+  signal(SIGABRT, sig_catcher);
+  signal(SIGKILL, sig_catcher);
+
   const char *val_layers[] = {"VK_LAYER_KHRONOS_validation"};
   const char *ext[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
@@ -159,15 +288,21 @@ int main() {
 
   init_vulkan_context(&vk_ctx);
 
+  VkApplicationInfo app_info = {.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+                                .apiVersion = VK_API_VERSION_1_0,
+                                .engineVersion = VK_MAKE_VERSION(1, 0, 0),
+                                .pEngineName = "GOODGIRL",
+                                .pApplicationName = "GG_ENDING_TEST",
+                                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                .pNext = NULL};
+
+  vk_ctx.app_info = app_info;
+
   vk_ctx.validation_layers = val_layers;
   vk_ctx.validation_layers_count = sizeof(val_layers) / sizeof(*val_layers);
 
   vk_ctx.lgpu_extensions = ext;
   vk_ctx.lgpu_extension_count = sizeof(ext) / sizeof(*ext);
-
-  window_context w_ctx = {.glfw_window = NULL,
-                          .window_dimensions = {500, 500},
-                          .window_title = "sugma balls"};
 
   int setup_result = setup_vulkan(&w_ctx, &vk_ctx);
   if (0 != setup_result) {
@@ -177,10 +312,14 @@ int main() {
   }
 
 #ifdef DEBUG
-  fprintf(stderr, "Vulkan environment set up successfully.\n");
+  fprintf(stderr, "Vulkan environment set up and ready to go\n");
 #endif
 
+  // sleep(1);
+
   while (!glfwWindowShouldClose(w_ctx.glfw_window)) {
+    glfwPollEvents();
+    draw_frame(&vk_ctx, 0, 0, 0, 0, 0);
   }
 
   destroy_vulkan_window(&w_ctx);

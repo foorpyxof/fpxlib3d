@@ -61,3 +61,6 @@ dkms.conf
 build/
 
 compile_commands.json
+
+# SPIR-V compiled shaders
+*.spv

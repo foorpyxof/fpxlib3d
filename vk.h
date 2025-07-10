@@ -8,10 +8,12 @@
 struct logical_gpu_info;
 
 struct active_swapchain {
-  int lgpu_index;
-
   VkSwapchainKHR swapchain;
   VkExtent2D swapchain_extent;
+
+  VkSemaphore image_available;
+  VkSemaphore render_finished;
+  VkFence in_flight;
 
   VkImage *images;
   size_t image_count;
@@ -19,13 +21,15 @@ struct active_swapchain {
 
   VkImageView *views;
   size_t view_count;
+
+  VkFramebuffer *framebuffers;
+  size_t framebuffer_count;
 };
 
 typedef struct {
   VkPhysicalDevice physical_gpu;
   struct logical_gpu_info *logical_gpus;
   size_t lg_count, lg_capacity;
-  struct active_swapchain current_swapchain;
 
   const char **lgpu_extensions;
   size_t lgpu_extension_count;
@@ -104,8 +108,24 @@ struct queue_info {
   VkQueueFlags queue_flags;
 };
 
+struct pipeline {
+  VkPipeline pipeline;
+  VkPipelineLayout layout;
+  VkRenderPass render_pass;
+};
+
 struct logical_gpu_info {
   VkDevice gpu;
+  VkPhysicalDeviceFeatures features;
+
+  struct active_swapchain current_swapchain;
+
+  VkCommandPool command_pool;
+  VkCommandBuffer *command_buffers;
+  size_t command_buffer_count;
+
+  struct pipeline *pipelines;
+  size_t pipeline_capacity;
 
   VkQueue *render_queues;
   size_t render_count;
@@ -125,7 +145,7 @@ struct logical_gpu_info {
 // return -4: error while allocating memory
 // return -5: error while creating the logical gpu
 int new_logical_vulkan_gpu(vulkan_context *, float priority,
-                           VkPhysicalDeviceFeatures *, int render_queues,
+                           VkPhysicalDeviceFeatures, int render_queues,
                            int presentation_queues);
 
 int new_vulkan_queue(vulkan_context *, struct logical_gpu_info *,
@@ -159,3 +179,64 @@ swapchain_compatibility(VkPhysicalDevice, VkSurfaceKHR,
 
 int create_vulkan_swap_chain(window_context *, const struct swapchain_details *,
                              size_t logical_gpu_index);
+
+enum shader_stage {
+  INVALID = 0,
+  // INPUT = 1,
+  VERTEX = 2,
+  TESSELATION = 3,
+  GEOMETRY = 4,
+  // RASTERIZATION = 5,
+  FRAGMENT = 6,
+  // BLENDING = 7,
+};
+
+struct spirv_file {
+  uint8_t *buffer;
+  size_t filesize;
+
+  enum shader_stage stage;
+};
+
+struct spirv_file read_spirv(const char *filename, enum shader_stage);
+
+struct shader_set {
+  // VkShaderModule input;
+  VkShaderModule vertex;
+  VkShaderModule tesselation;
+  VkShaderModule geometry;
+  // VkShaderModule rasterization;
+  VkShaderModule fragment;
+  // VkShaderModule blending;
+};
+
+int fill_shader_module(const struct logical_gpu_info *lgpu,
+                       const struct spirv_file, struct shader_set *);
+
+VkRenderPass create_render_pass(vulkan_context *, size_t lgpu_index);
+
+int set_render_pass(vulkan_context *, size_t lgpu_index, size_t pipeline_idx,
+                    VkRenderPass);
+
+// will realloc() if already has capacity > 0
+int allocate_pipelines(vulkan_context *, size_t lgpu_idx, size_t amount);
+
+int create_graphics_pipeline(vulkan_context *, size_t lgpu_index,
+                             size_t pipeline_index,
+                             const struct spirv_file *spirvs,
+                             size_t spirv_count, struct shader_set *);
+
+int create_framebuffers(vulkan_context *, size_t lgpu_index,
+                        size_t pipeline_index);
+
+int create_command_pool(vulkan_context *, size_t lgpu_index);
+
+int create_command_buffers(vulkan_context *, size_t lgpu_index, size_t amount);
+
+int apply_command_buffer(vulkan_context *, size_t lgpu_index,
+                         size_t pipeline_index, size_t buffer_index,
+                         size_t image_index);
+
+void draw_frame(vulkan_context *, size_t lgpu_index, size_t pipeline_index,
+                size_t command_buffer_index, size_t render_queue_index,
+                size_t present_queue_index);

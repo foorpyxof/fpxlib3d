@@ -1,4 +1,4 @@
-.PHONY: debug release all compile clean
+.PHONY: debug release all compile clean clean_libs
 
 CC = clang
 CFLAGS = -std=c17
@@ -10,11 +10,11 @@ all:
 
 release: EXTRA_FLAGS = -O3
 release: FILENAME = release
-release: main
+release: clean_libs main
 
-debug: EXTRA_FLAGS = -DDEBUG -Og -g
+debug: EXTRA_FLAGS = -DDEBUG -O0 -g
 debug: FILENAME = debug
-debug: main
+debug: clean_libs main
 
 vk.o:
 	$(CC) $(CFLAGS) -c $(EXTRA_FLAGS) vk.c -o $@
@@ -22,6 +22,8 @@ vk.o:
 main: vk.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) main.c $^ -o $(FILENAME).out
 
-clean:
+clean_libs:
 	rm *.o 2>/dev/null || true
+
+clean: clean_libs
 	rm *.out 2>/dev/null || true
