@@ -199,6 +199,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
   if (NULL == triangle_vertex_shader.buffer ||
       NULL == triangle_fragment_shader.buffer) {
     fprintf(stderr, "Failed to load compiled shaders\n");
+    return -1;
   }
 
   struct spirv_file spirvs[] = {triangle_vertex_shader,

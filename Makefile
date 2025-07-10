@@ -8,7 +8,7 @@ all:
 	$(MAKE) release
 	$(MAKE) debug
 
-release: EXTRA_FLAGS = -O3
+release: EXTRA_FLAGS = -O1
 release: FILENAME = release
 release: clean_libs main
 
