@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <vulkan/vulkan_core.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -7,23 +8,47 @@
 
 struct logical_gpu_info;
 
+#define INDEX_TYPE uint8_t
+struct indices {
+  INDEX_TYPE logical_gpu;
+  INDEX_TYPE pipeline;
+  INDEX_TYPE swapchain_frame;
+  INDEX_TYPE command_buffer;
+  INDEX_TYPE render_pass;
+  INDEX_TYPE render_queue;
+  INDEX_TYPE present_queue;
+};
+#undef INDEX_TYPE
+
+struct swapchain_frame {
+  VkImage image;
+  VkImageView view;
+  VkFramebuffer framebuffer;
+
+  VkSemaphore write_available;
+  VkSemaphore render_finished;
+};
+
 struct active_swapchain {
   VkSwapchainKHR swapchain;
   VkExtent2D swapchain_extent;
 
-  VkSemaphore image_available;
-  VkSemaphore render_finished;
-  VkFence in_flight;
+  VkSemaphore aquire_semaphore;
+  VkFence in_flight_fence;
 
-  VkImage *images;
-  size_t image_count;
   VkFormat image_format;
+  struct swapchain_frame *frames;
+  size_t frame_count;
+};
 
-  VkImageView *views;
-  size_t view_count;
+struct swapchain_requirements {
+  VkSurfaceCapabilitiesKHR surface_capabilities;
 
-  VkFramebuffer *framebuffers;
-  size_t framebuffer_count;
+  VkSurfaceFormatKHR *surface_formats;
+  size_t surface_formats_count;
+
+  VkPresentModeKHR *present_modes;
+  size_t present_modes_count;
 };
 
 typedef struct {
@@ -36,6 +61,10 @@ typedef struct {
 
   VkInstance vk_instance;
   VkSurfaceKHR vk_surface;
+
+  struct swapchain_requirements swapchain_requirements;
+
+  uint8_t teardown;
 
   VkApplicationInfo app_info;
 
@@ -111,7 +140,7 @@ struct queue_info {
 struct pipeline {
   VkPipeline pipeline;
   VkPipelineLayout layout;
-  VkRenderPass render_pass;
+  int vertex_count;
 };
 
 struct logical_gpu_info {
@@ -126,6 +155,9 @@ struct logical_gpu_info {
 
   struct pipeline *pipelines;
   size_t pipeline_capacity;
+
+  VkRenderPass *render_passes;
+  size_t render_pass_capacity;
 
   VkQueue *render_queues;
   size_t render_count;
@@ -148,18 +180,12 @@ int new_logical_vulkan_gpu(vulkan_context *, float priority,
                            VkPhysicalDeviceFeatures, int render_queues,
                            int presentation_queues);
 
-int new_vulkan_queue(vulkan_context *, struct logical_gpu_info *,
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+int new_vulkan_queue(vulkan_context *, struct indices *,
                      enum queue_family_type);
-
-struct swapchain_requirements {
-  VkSurfaceCapabilitiesKHR surface_capabilities;
-
-  VkSurfaceFormatKHR *surface_formats;
-  size_t surface_formats_count;
-
-  VkPresentModeKHR *present_modes;
-  size_t present_modes_count;
-};
 
 struct swapchain_details {
   uint8_t swapchains_available;
@@ -173,12 +199,22 @@ struct swapchain_details {
   VkPresentModeKHR present_mode;
 };
 
-struct swapchain_details
-swapchain_compatibility(VkPhysicalDevice, VkSurfaceKHR,
-                        const struct swapchain_requirements *);
+void save_swapchain_requirements(vulkan_context *,
+                                 const struct swapchain_requirements *);
 
+struct swapchain_details swapchain_compatibility(vulkan_context *,
+                                                 VkPhysicalDevice);
+
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
 int create_vulkan_swap_chain(window_context *, const struct swapchain_details *,
-                             size_t logical_gpu_index);
+                             struct indices *);
+
+int refresh_vulkan_swap_chain(window_context *,
+                              const struct swapchain_details *,
+                              struct indices *);
 
 enum shader_stage {
   INVALID = 0,
@@ -210,33 +246,105 @@ struct shader_set {
   // VkShaderModule blending;
 };
 
-int fill_shader_module(const struct logical_gpu_info *lgpu,
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+int fill_shader_module(vulkan_context *, struct indices *,
                        const struct spirv_file, struct shader_set *);
 
-VkRenderPass create_render_pass(vulkan_context *, size_t lgpu_index);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+VkRenderPass create_render_pass(vulkan_context *, struct indices *);
 
-int set_render_pass(vulkan_context *, size_t lgpu_index, size_t pipeline_idx,
-                    VkRenderPass);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+int allocate_render_passes(vulkan_context *, struct indices *, size_t amount);
 
+/*
+ * INDICES READ:
+ * - logical_gpu
+ * - render_pass
+ */
+int add_render_pass(vulkan_context *, struct indices *, VkRenderPass);
+
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
 // will realloc() if already has capacity > 0
-int allocate_pipelines(vulkan_context *, size_t lgpu_idx, size_t amount);
+int allocate_pipelines(vulkan_context *, struct indices *, size_t amount);
 
-int create_graphics_pipeline(vulkan_context *, size_t lgpu_index,
-                             size_t pipeline_index,
+/*
+ * INDICES READ:
+ * - logical_gpu
+ * - pipeline
+ */
+int create_graphics_pipeline(vulkan_context *, struct indices *,
                              const struct spirv_file *spirvs,
-                             size_t spirv_count, struct shader_set *);
+                             size_t spirv_count, struct shader_set *,
+                             size_t vertices);
 
-int create_framebuffers(vulkan_context *, size_t lgpu_index,
-                        size_t pipeline_index);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ * - render_pass
+ */
+int create_framebuffers(vulkan_context *, struct indices *);
 
-int create_command_pool(vulkan_context *, size_t lgpu_index);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+int create_command_pool(vulkan_context *, struct indices *);
 
-int create_command_buffers(vulkan_context *, size_t lgpu_index, size_t amount);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+int create_command_buffers(vulkan_context *, struct indices *, size_t amount);
 
-int apply_command_buffer(vulkan_context *, size_t lgpu_index,
-                         size_t pipeline_index, size_t buffer_index,
-                         size_t image_index);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ * - command_buffer
+ * - render_pass
+ * - swapchain_frame
+ */
+int record_command_buffer(vulkan_context *, struct indices *,
+                          uint8_t *pipeline_indices, size_t pipeline_count);
 
-void draw_frame(vulkan_context *, size_t lgpu_index, size_t pipeline_index,
-                size_t command_buffer_index, size_t render_queue_index,
-                size_t present_queue_index);
+/*
+ * INDICES READ:
+ * - logical_gpu
+ * - command_buffer
+ * - swapchain_frame
+ * - render_queue
+ */
+int submit_command_buffer(vulkan_context *, struct indices *);
+
+/*
+ * INDICES READ:
+ * - logical_gpu
+ */
+int present_swap_frame(vulkan_context *, struct indices *);
+
+/*
+ * INDICES READ:
+ * - logical_gpu
+ * - command_buffer
+ * - render_pass
+ * - render_queue
+ * - present_queue
+ */
+// this function calls:
+//  record_command_buffer()
+//  submit_command_buffer()
+//  present_swap_frame()
+// to draw to the screen
+void draw_frame(window_context *, struct indices *, uint8_t *pipeline_indices,
+                size_t pipeline_count);

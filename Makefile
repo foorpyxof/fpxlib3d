@@ -1,4 +1,4 @@
-.PHONY: debug release all compile clean clean_libs
+.PHONY: debug release all compile clean clean_libs shaders
 
 CC = clang
 CFLAGS = -std=c17
@@ -27,3 +27,6 @@ clean_libs:
 
 clean: clean_libs
 	rm *.out 2>/dev/null || true
+
+shaders:
+	bash -c './compile_shaders.sh'

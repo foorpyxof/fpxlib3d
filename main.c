@@ -11,7 +11,7 @@
 
 window_context w_ctx = {.glfw_window = NULL,
                         .window_dimensions = {500, 500},
-                        .window_title = "sugma balls"};
+                        .window_title = "YAY VULKAN RENDERER"};
 
 static void sig_catcher(int signo) {
   const char *type = NULL;
@@ -88,7 +88,7 @@ int gpu_suitability(vulkan_context *ctx, VkPhysicalDevice to_score) {
   {
     struct swapchain_details sc_details = {0};
 
-    sc_details = swapchain_compatibility(to_score, ctx->vk_surface, &sc_reqs);
+    sc_details = swapchain_compatibility(ctx, to_score);
 
     if (!(sc_details.swapchains_available && sc_details.surface_format_valid &&
           sc_details.present_mode_valid)) {
@@ -101,7 +101,8 @@ gpu_suitability_ret:
   return score * multiplier;
 }
 
-int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
+int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
+                 struct indices *indices) {
   w_ctx->vk_context = vk_ctx;
 
   {
@@ -118,6 +119,8 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
             "Successfully created Vulkan instance, window and surface\n");
 #endif
   }
+
+  save_swapchain_requirements(vk_ctx, &sc_reqs);
 
   {
     int success = choose_vulkan_gpu(vk_ctx, gpu_suitability);
@@ -165,12 +168,12 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
   struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[lgpu_index];
 
   for (int i = 0; i < lgpu->render_capacity; ++i) {
-    if (0 > new_vulkan_queue(vk_ctx, lgpu, RENDER))
+    if (0 > new_vulkan_queue(vk_ctx, indices, RENDER))
       return EXIT_FAILURE;
   }
 
   for (int i = 0; i < lgpu->presentation_capacity; ++i) {
-    if (0 > new_vulkan_queue(vk_ctx, lgpu, PRESENTATION))
+    if (0 > new_vulkan_queue(vk_ctx, indices, PRESENTATION))
       return EXIT_FAILURE;
   }
 
@@ -179,9 +182,9 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
 #endif
 
   {
-    struct swapchain_details details = swapchain_compatibility(
-        vk_ctx->physical_gpu, vk_ctx->vk_surface, &sc_reqs);
-    int success = create_vulkan_swap_chain(w_ctx, &details, lgpu_index);
+    struct swapchain_details details =
+        swapchain_compatibility(vk_ctx, vk_ctx->physical_gpu);
+    int success = create_vulkan_swap_chain(w_ctx, &details, indices);
 
     if (VK_SUCCESS == success) {
 #ifdef DEBUG
@@ -196,22 +199,24 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
   struct spirv_file triangle_fragment_shader =
       read_spirv("shaders/triangle.frag.spv", FRAGMENT);
 
+  struct spirv_file square_vertex_shader =
+      read_spirv("shaders/square.vert.spv", VERTEX);
+
+  struct spirv_file square_fragment_shader =
+      read_spirv("shaders/square.frag.spv", FRAGMENT);
+
   if (NULL == triangle_vertex_shader.buffer ||
       NULL == triangle_fragment_shader.buffer) {
     fprintf(stderr, "Failed to load compiled shaders\n");
     return -1;
   }
 
-  struct spirv_file spirvs[] = {triangle_vertex_shader,
-                                triangle_fragment_shader};
-
-  struct shader_set shader_set = {0};
-
   // allocate room for one pipeline
-  allocate_pipelines(vk_ctx, 0, 1);
+  if (0 > allocate_pipelines(vk_ctx, indices, 2))
+    return -1;
 
   {
-    VkRenderPass pass = create_render_pass(vk_ctx, 0);
+    VkRenderPass pass = create_render_pass(vk_ctx, indices);
 
     if (VK_NULL_HANDLE == pass) {
 #ifdef DEBUG
@@ -220,15 +225,46 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
       return -1;
     }
 
-    set_render_pass(vk_ctx, 0, 0, pass);
+    {
+      if (0 > allocate_render_passes(vk_ctx, indices, 1))
+        return -1;
+    }
+
+    add_render_pass(vk_ctx, indices, pass);
 
     {
-      int success = create_graphics_pipeline(
-          vk_ctx, 0, 0, spirvs, sizeof(spirvs) / sizeof(*spirvs), &shader_set);
+      struct spirv_file spirvs[] = {triangle_vertex_shader,
+                                    triangle_fragment_shader};
+
+      struct shader_set shader_set = {0};
+
+      indices->pipeline = 0;
+      int success = create_graphics_pipeline(vk_ctx, indices, spirvs,
+                                             sizeof(spirvs) / sizeof(*spirvs),
+                                             &shader_set, 3);
 
       if (0 != success) {
 #ifdef DEBUG
-        fprintf(stderr, "Could not create graphics pipeline\n");
+        fprintf(stderr, "Could not create graphics pipelines\n");
+#endif
+        return success;
+      }
+    }
+
+    {
+      struct spirv_file spirvs[] = {square_vertex_shader,
+                                    square_fragment_shader};
+
+      struct shader_set shader_set = {0};
+
+      indices->pipeline = 1;
+      int success = create_graphics_pipeline(vk_ctx, indices, spirvs,
+                                             sizeof(spirvs) / sizeof(*spirvs),
+                                             &shader_set, 4);
+
+      if (0 != success) {
+#ifdef DEBUG
+        fprintf(stderr, "Could not create graphics pipelines\n");
 #endif
         return success;
       }
@@ -240,7 +276,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
   }
 
   {
-    int success = create_framebuffers(vk_ctx, 0, 0);
+    int success = create_framebuffers(vk_ctx, indices);
     if (0 != success) {
 #ifdef DEBUG
       fprintf(stderr, "Could not create framebuffers for swapchain\n");
@@ -250,7 +286,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
   }
 
   {
-    int success = create_command_pool(vk_ctx, 0);
+    int success = create_command_pool(vk_ctx, indices);
     if (0 != success) {
 #ifdef DEBUG
       fprintf(stderr, "Could not create command pool\n");
@@ -260,7 +296,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx) {
   }
 
   {
-    int success = create_command_buffers(vk_ctx, 0, 1);
+    int success = create_command_buffers(vk_ctx, indices, 1);
     if (0 != success) {
 #ifdef DEBUG
       fprintf(stderr, "Could not create command buffer\n");
@@ -305,7 +341,9 @@ int main() {
   vk_ctx.lgpu_extensions = ext;
   vk_ctx.lgpu_extension_count = sizeof(ext) / sizeof(*ext);
 
-  int setup_result = setup_vulkan(&w_ctx, &vk_ctx);
+  struct indices indices = {0};
+
+  int setup_result = setup_vulkan(&w_ctx, &vk_ctx, &indices);
   if (0 != setup_result) {
     fprintf(stderr,
             "Errors occured while setting up Vulkan environment. Quitting.\n");
@@ -318,9 +356,11 @@ int main() {
 
   // sleep(1);
 
+  uint8_t p_idx[] = {0};
+
   while (!glfwWindowShouldClose(w_ctx.glfw_window)) {
     glfwPollEvents();
-    draw_frame(&vk_ctx, 0, 0, 0, 0, 0);
+    draw_frame(&w_ctx, &indices, p_idx, sizeof(p_idx) / sizeof(*p_idx));
   }
 
   destroy_vulkan_window(&w_ctx);

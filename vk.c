@@ -1,5 +1,6 @@
 #include <cglm/types.h>
 #include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -8,6 +9,7 @@
 #include <string.h>
 
 #include <fcntl.h>
+#include <vk_video/vulkan_video_codec_av1std.h>
 #include <vulkan/vulkan_core.h>
 
 #define GLFW_INCLUDE_VULKAN
@@ -46,6 +48,10 @@
 
 #ifdef DEBUG
 #define FPX_VK_USE_VALIDATION_LAYERS
+#endif
+
+#ifndef MAX_IN_FLIGHT
+#define MAX_IN_FLIGHT 2
 #endif
 
 VkResult init_vulkan_context(vulkan_context *ctx) {
@@ -208,16 +214,52 @@ int create_vulkan_window(window_context *ctx) {
   return res;
 }
 
+static void clean_swapchain(struct logical_gpu_info *lgpu) {
+  struct active_swapchain *sc = &lgpu->current_swapchain;
+
+  if (NULL != sc->frames)
+    for (int i = 0; i < sc->frame_count; ++i) {
+      struct swapchain_frame *f = &sc->frames[i];
+      if (VK_NULL_HANDLE != sc->frames[i].framebuffer)
+        vkDestroyFramebuffer(lgpu->gpu, sc->frames[i].framebuffer, NULL);
+
+      if (VK_NULL_HANDLE != f->view)
+        vkDestroyImageView(lgpu->gpu, f->view, NULL);
+
+      if (VK_NULL_HANDLE != f->write_available) {
+        vkDestroySemaphore(lgpu->gpu, f->write_available, NULL);
+      }
+      if (VK_NULL_HANDLE != f->render_finished) {
+        vkDestroySemaphore(lgpu->gpu, f->render_finished, NULL);
+      }
+    }
+
+  FREE_SAFE(sc->frames);
+  sc->frame_count = 0;
+
+  return;
+}
+
 static void destroy_lgpu(struct logical_gpu_info *lgpu) {
   struct active_swapchain *sc = &lgpu->current_swapchain;
+
+  vkDeviceWaitIdle(lgpu->gpu);
 
   if (VK_NULL_HANDLE != lgpu->command_pool)
     vkDestroyCommandPool(lgpu->gpu, lgpu->command_pool, NULL);
 
-  for (int i = 0; i < sc->framebuffer_count; ++i) {
-    if (VK_NULL_HANDLE != sc->framebuffers[i])
-      vkDestroyFramebuffer(lgpu->gpu, sc->framebuffers[i], NULL);
-  }
+  clean_swapchain(lgpu);
+
+  if (VK_NULL_HANDLE != sc->swapchain)
+    vkDestroySwapchainKHR(lgpu->gpu, sc->swapchain, NULL);
+
+  if (NULL != lgpu->render_passes)
+    for (int i = 0; i < lgpu->render_pass_capacity; ++i) {
+      if (VK_NULL_HANDLE != lgpu->render_passes[i])
+        vkDestroyRenderPass(lgpu->gpu, lgpu->render_passes[i], NULL);
+    }
+
+  FREE_SAFE(lgpu->render_passes);
 
   for (int i = 0; i < lgpu->pipeline_capacity; ++i) {
     struct pipeline *p = &lgpu->pipelines[i];
@@ -227,31 +269,16 @@ static void destroy_lgpu(struct logical_gpu_info *lgpu) {
 
     if (NULL != p->layout)
       vkDestroyPipelineLayout(lgpu->gpu, p->layout, NULL);
-
-    if (NULL != p->render_pass)
-      vkDestroyRenderPass(lgpu->gpu, p->render_pass, NULL);
   }
 
-  if (VK_NULL_HANDLE != sc->swapchain)
-    vkDestroySwapchainKHR(lgpu->gpu, lgpu->current_swapchain.swapchain, NULL);
-
-  if (NULL != sc->views)
-    for (int i = 0; i < sc->view_count; ++i) {
-      if (NULL != sc->views[i])
-        vkDestroyImageView(lgpu->gpu, sc->views[i], NULL);
-    }
-
-  FREE_SAFE(sc->views);
-
-  // semaphores and fences
-  if (VK_NULL_HANDLE != sc->image_available) {
-    vkDestroySemaphore(lgpu->gpu, sc->image_available, NULL);
+  if (VK_NULL_HANDLE != lgpu->current_swapchain.aquire_semaphore) {
+    vkDestroySemaphore(lgpu->gpu, lgpu->current_swapchain.aquire_semaphore,
+                       NULL);
   }
-  if (VK_NULL_HANDLE != sc->render_finished) {
-    vkDestroySemaphore(lgpu->gpu, sc->render_finished, NULL);
-  }
-  if (VK_NULL_HANDLE != sc->image_available) {
-    vkDestroyFence(lgpu->gpu, sc->in_flight, NULL);
+
+  // fences
+  if (VK_NULL_HANDLE != sc->in_flight_fence) {
+    vkDestroyFence(lgpu->gpu, sc->in_flight_fence, NULL);
   }
 
   vkDestroyDevice(lgpu->gpu, NULL);
@@ -560,11 +587,13 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
   return ctx->lg_count++;
 }
 
-int new_vulkan_queue(vulkan_context *vk_ctx, struct logical_gpu_info *lgpu,
+int new_vulkan_queue(vulkan_context *vk_ctx, struct indices *indices,
                      enum queue_family_type type) {
   size_t *capacity = NULL, *count = NULL;
   VkQueue *queues = NULL;
   int *qf_index = NULL;
+
+  struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[indices->logical_gpu];
 
   switch (type) {
   case RENDER:
@@ -679,12 +708,19 @@ static VkPresentModeKHR *present_mode_picker(VkPhysicalDevice dev,
   return NULL;
 }
 
-struct swapchain_details
-swapchain_compatibility(VkPhysicalDevice dev, VkSurfaceKHR sfc,
-                        const struct swapchain_requirements *reqs) {
-  struct swapchain_details details = {0};
+void save_swapchain_requirements(vulkan_context *ctx,
+                                 const struct swapchain_requirements *reqs) {
+  ctx->swapchain_requirements = *reqs;
 
-  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, sfc,
+  return;
+}
+
+struct swapchain_details swapchain_compatibility(vulkan_context *ctx,
+                                                 VkPhysicalDevice dev) {
+  struct swapchain_details details = {0};
+  struct swapchain_requirements *reqs = &ctx->swapchain_requirements;
+
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, ctx->vk_surface,
                                             &details.surface_capabilities);
 
   const char *ext = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -696,8 +732,9 @@ swapchain_compatibility(VkPhysicalDevice dev, VkSurfaceKHR sfc,
 
   if (reqs->surface_formats_count > 0) {
     VkSurfaceFormatKHR fmt;
-    VkSurfaceFormatKHR *output = surface_format_picker(
-        dev, sfc, reqs->surface_formats, reqs->surface_formats_count, &fmt);
+    VkSurfaceFormatKHR *output =
+        surface_format_picker(dev, ctx->vk_surface, reqs->surface_formats,
+                              reqs->surface_formats_count, &fmt);
 
     if (NULL != output) {
       details.surface_format = fmt;
@@ -708,8 +745,9 @@ swapchain_compatibility(VkPhysicalDevice dev, VkSurfaceKHR sfc,
 
   if (reqs->present_modes_count > 0) {
     VkPresentModeKHR md;
-    VkPresentModeKHR *output = present_mode_picker(
-        dev, sfc, reqs->present_modes, reqs->present_modes_count, &md);
+    VkPresentModeKHR *output =
+        present_mode_picker(dev, ctx->vk_surface, reqs->present_modes,
+                            reqs->present_modes_count, &md);
 
     if (NULL != output) {
       details.present_mode = md;
@@ -742,7 +780,7 @@ swapchain_extent(window_context *ctx,
 
 int create_vulkan_swap_chain(window_context *ctx,
                              const struct swapchain_details *details,
-                             size_t lgpu_index) {
+                             struct indices *indices) {
   if (!(details->surface_format_valid && details->present_mode_valid))
     return -1;
 
@@ -751,8 +789,11 @@ int create_vulkan_swap_chain(window_context *ctx,
   VkSwapchainCreateInfoKHR s_info = {0};
   VkExtent2D extent = swapchain_extent(ctx, cap);
 
-  struct logical_gpu_info *lgpu = &ctx->vk_context->logical_gpus[lgpu_index];
+  struct logical_gpu_info *lgpu =
+      &ctx->vk_context->logical_gpus[indices->logical_gpu];
   struct active_swapchain *current_chain = &lgpu->current_swapchain;
+
+  VkSwapchainKHR old_swapchain = current_chain->swapchain;
 
   {
     uint32_t image_count = cap->minImageCount + 1;
@@ -788,8 +829,9 @@ int create_vulkan_swap_chain(window_context *ctx,
     s_info.presentMode = details->present_mode;
     s_info.clipped = VK_TRUE;
 
-    s_info.oldSwapchain = current_chain->swapchain;
+    s_info.oldSwapchain = old_swapchain;
   }
+
   VkSwapchainKHR new_swapchain = {0};
 
   VkResult success =
@@ -802,11 +844,11 @@ int create_vulkan_swap_chain(window_context *ctx,
     return -2;
   }
 
-  uint32_t image_count = 0;
+  uint32_t frame_count = 0;
   VkImage *images = NULL;
-  vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &image_count, NULL);
+  vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &frame_count, NULL);
 
-  images = (VkImage *)calloc(image_count, sizeof(VkImage));
+  images = (VkImage *)calloc(frame_count, sizeof(VkImage));
   if (NULL == images) {
     perror("calloc()");
 
@@ -817,10 +859,7 @@ int create_vulkan_swap_chain(window_context *ctx,
     return -3;
   }
 
-  vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &image_count, images);
-
-  size_t view_count = image_count;
-  VkImageView *views = (VkImageView *)calloc(view_count, sizeof(VkImageView));
+  VkImageView *views = (VkImageView *)calloc(frame_count, sizeof(VkImageView));
 
   if (NULL == views) {
     perror("calloc()");
@@ -833,7 +872,9 @@ int create_vulkan_swap_chain(window_context *ctx,
     return -3;
   }
 
-  for (int i = 0; i < view_count; ++i) {
+  vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &frame_count, images);
+
+  for (int i = 0; i < frame_count; ++i) {
     VkImageViewCreateInfo v_info = {0};
 
     v_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -861,52 +902,102 @@ int create_vulkan_swap_chain(window_context *ctx,
     }
   }
 
-  if (0 != current_chain->image_count) {
-    FREE_SAFE(current_chain->images);
+  if (0 != current_chain->frame_count) {
+    FREE_SAFE(current_chain->frames);
   }
 
-  if (0 != current_chain->view_count) {
-    FREE_SAFE(current_chain->views);
+  struct swapchain_frame *frames = (struct swapchain_frame *)calloc(
+      frame_count, sizeof(struct swapchain_frame));
+  if (NULL == frames) {
+    perror("calloc()");
+
+    FREE_SAFE(images);
+    FREE_SAFE(views);
+
+    return -3;
   }
 
-  current_chain->swapchain = new_swapchain;
-  current_chain->swapchain_extent = extent;
-  current_chain->images = images;
-  current_chain->image_count = image_count;
-  current_chain->views = views;
-  current_chain->view_count = view_count;
-  current_chain->image_format = details->surface_format.format;
+  VkSemaphore sema = VK_NULL_HANDLE;
 
   {
     VkSemaphoreCreateInfo sema_info = {0};
     sema_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
+    for (int i = 0; i < frame_count; ++i) {
+      if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL,
+                                          &frames[i].write_available) ||
+          VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL,
+                                          &frames[i].render_finished)) {
+        FREE_SAFE(images);
+        FREE_SAFE(views);
+        FREE_SAFE(frames);
+
+        return -5;
+      }
+
+      frames[i].image = images[i];
+      frames[i].view = views[i];
+    }
+
+    if (VK_NULL_HANDLE == lgpu->current_swapchain.aquire_semaphore) {
+      if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL, &sema)) {
+        FREE_SAFE(images);
+        FREE_SAFE(views);
+        FREE_SAFE(frames);
+
+        return -5;
+      }
+
+      current_chain->aquire_semaphore = sema;
+    }
+  }
+
+  {
     VkFenceCreateInfo fence_info = {0};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    VkSemaphore sema1 = VK_NULL_HANDLE;
-    VkSemaphore sema2 = VK_NULL_HANDLE;
+    VkFence fence = current_chain->in_flight_fence;
 
-    VkFence fence1 = VK_NULL_HANDLE;
+    if (VK_NULL_HANDLE == current_chain->in_flight_fence)
+      if (VK_SUCCESS != vkCreateFence(lgpu->gpu, &fence_info, NULL, &fence)) {
+        FREE_SAFE(images);
+        FREE_SAFE(views);
+        FREE_SAFE(frames);
 
-    if (VK_NULL_HANDLE == current_chain->image_available)
-      if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL, &sema1))
         return -5;
-    if (VK_NULL_HANDLE == current_chain->render_finished)
-      if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL, &sema2))
-        return -5;
-    if (VK_NULL_HANDLE == current_chain->in_flight)
-      if (VK_SUCCESS != vkCreateFence(lgpu->gpu, &fence_info, NULL, &fence1))
-        return -5;
+      }
 
-    current_chain->image_available = sema1;
-    current_chain->render_finished = sema2;
-
-    current_chain->in_flight = fence1;
+    current_chain->in_flight_fence = fence;
   }
 
+  if (VK_NULL_HANDLE != old_swapchain)
+    vkDestroySwapchainKHR(lgpu->gpu, old_swapchain, NULL);
+
+  current_chain->image_format = details->surface_format.format;
+  current_chain->swapchain = new_swapchain;
+  current_chain->swapchain_extent = extent;
+  current_chain->frames = frames;
+  current_chain->frame_count = frame_count;
+
   return VK_SUCCESS;
+}
+
+int refresh_vulkan_swap_chain(window_context *w_ctx,
+                              const struct swapchain_details *details,
+                              struct indices *indices) {
+  struct logical_gpu_info *lgpu =
+      &w_ctx->vk_context->logical_gpus[indices->logical_gpu];
+
+  // first we clean it up
+  vkDeviceWaitIdle(lgpu->gpu);
+  clean_swapchain(lgpu);
+
+  // then we recreate it
+  create_vulkan_swap_chain(w_ctx, details, indices);
+  create_framebuffers(w_ctx->vk_context, indices);
+
+  return 0;
 }
 
 struct spirv_file read_spirv(const char *filename, enum shader_stage stage) {
@@ -920,12 +1011,14 @@ struct spirv_file read_spirv(const char *filename, enum shader_stage stage) {
 
   if (0 > fseek(fp, 0, SEEK_END)) {
     perror("fseek()");
+    fclose(fp);
     return file;
   }
 
   int size = ftell(fp);
   if (0 > size) {
     perror("ftell()");
+    fclose(fp);
     return file;
   }
 
@@ -941,6 +1034,7 @@ struct spirv_file read_spirv(const char *filename, enum shader_stage stage) {
       (uint8_t *)malloc(size + (sizeof(uint32_t) - (size % sizeof(uint32_t))));
   if (NULL == file.buffer) {
     perror("malloc()");
+    fclose(fp);
     return file;
   }
 
@@ -949,11 +1043,14 @@ struct spirv_file read_spirv(const char *filename, enum shader_stage stage) {
     fprintf(stderr, "Read too little from SPIR-V file");
 #endif
     FREE_SAFE(file.buffer);
+    fclose(fp);
     return file;
   }
 
   file.filesize = size;
   file.stage = stage;
+
+  fclose(fp);
 
   return file;
 }
@@ -999,9 +1096,10 @@ static VkShaderModule *select_module_stage(struct shader_set *set,
   return module;
 }
 
-int fill_shader_module(const struct logical_gpu_info *lgpu,
+int fill_shader_module(vulkan_context *ctx, struct indices *indices,
                        const struct spirv_file spirv, struct shader_set *set) {
   VkShaderModule *module = NULL;
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
   module = select_module_stage(set, spirv.stage);
 
@@ -1026,13 +1124,13 @@ int fill_shader_module(const struct logical_gpu_info *lgpu,
   return VK_SUCCESS;
 }
 
-VkRenderPass create_render_pass(vulkan_context *ctx, size_t lgpu_index) {
+VkRenderPass create_render_pass(vulkan_context *ctx, struct indices *indices) {
   // TODO: make modular. currently hardcoded to follow tutorial
   // maybe have the programmer pass an array of color attachments,
   // or maybe subpasses
 
   VkRenderPass pass = VK_NULL_HANDLE;
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
   VkAttachmentDescription color_attachment = {0};
   color_attachment.format = lgpu->current_swapchain.image_format;
@@ -1077,8 +1175,8 @@ VkRenderPass create_render_pass(vulkan_context *ctx, size_t lgpu_index) {
   r_info.pDependencies = &s_dep;
 
   {
-    int success = vkCreateRenderPass(ctx->logical_gpus[lgpu_index].gpu, &r_info,
-                                     NULL, &pass);
+    int success = vkCreateRenderPass(
+        ctx->logical_gpus[indices->logical_gpu].gpu, &r_info, NULL, &pass);
 
     if (VK_SUCCESS != success) {
       return VK_NULL_HANDLE;
@@ -1088,20 +1186,47 @@ VkRenderPass create_render_pass(vulkan_context *ctx, size_t lgpu_index) {
   return pass;
 }
 
-int set_render_pass(vulkan_context *ctx, size_t lgpu_idx, size_t pipeline_idx,
-                    VkRenderPass pass) {
-  ctx->logical_gpus[lgpu_idx].pipelines[pipeline_idx].render_pass = pass;
+int allocate_render_passes(vulkan_context *ctx, struct indices *indices,
+                           size_t amount) {
+  if (1 > amount)
+    return -1;
+
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+
+  lgpu->render_passes = (VkRenderPass *)realloc(lgpu->render_passes,
+                                                amount * sizeof(VkRenderPass));
+
+  if (NULL == lgpu->render_passes) {
+    perror("realloc()");
+    return -2;
+  }
+
+  memset(&lgpu->render_passes[lgpu->render_pass_capacity], 0,
+         sizeof(lgpu->render_passes[0]) *
+             (amount - lgpu->render_pass_capacity));
+
+  lgpu->render_pass_capacity = amount;
 
   return 0;
 }
 
-int allocate_pipelines(vulkan_context *ctx, size_t lgpu_idx, size_t amount) {
+int add_render_pass(vulkan_context *ctx, struct indices *indices,
+                    VkRenderPass pass) {
+  ctx->logical_gpus[indices->logical_gpu].render_passes[indices->render_pass] =
+      pass;
+
+  return 0;
+}
+
+int allocate_pipelines(vulkan_context *ctx, struct indices *indices,
+                       size_t amount) {
   if (1 > amount)
     return -1;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_idx];
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
-  lgpu->pipelines = (struct pipeline *)realloc(lgpu->pipelines, amount);
+  lgpu->pipelines = (struct pipeline *)realloc(
+      lgpu->pipelines, amount * sizeof(struct pipeline));
 
   if (NULL == lgpu->pipelines) {
     perror("realloc()");
@@ -1116,12 +1241,12 @@ int allocate_pipelines(vulkan_context *ctx, size_t lgpu_idx, size_t amount) {
   return 0;
 }
 
-int create_graphics_pipeline(vulkan_context *ctx, size_t lgpu_index,
-                             size_t pipeline_index,
+int create_graphics_pipeline(vulkan_context *ctx, struct indices *indices,
                              const struct spirv_file *spirvs,
-                             size_t spirv_count, struct shader_set *set) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
-  struct pipeline *p = &lgpu->pipelines[pipeline_index];
+                             size_t spirv_count, struct shader_set *set,
+                             size_t vertices) {
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+  struct pipeline *p = &lgpu->pipelines[indices->pipeline];
 
   // populate shader_set struct
   for (int i = 0; i < spirv_count; ++i) {
@@ -1129,7 +1254,7 @@ int create_graphics_pipeline(vulkan_context *ctx, size_t lgpu_index,
     if (VK_NULL_HANDLE != *module)
       continue;
 
-    int success = fill_shader_module(lgpu, spirvs[i], set);
+    int success = fill_shader_module(ctx, indices, spirvs[i], set);
 
     if (0 != success) {
       // error happened
@@ -1195,7 +1320,7 @@ int create_graphics_pipeline(vulkan_context *ctx, size_t lgpu_index,
 
   {
     a_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    a_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    a_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     a_info.primitiveRestartEnable = VK_FALSE;
   }
 
@@ -1322,7 +1447,7 @@ int create_graphics_pipeline(vulkan_context *ctx, size_t lgpu_index,
 
     p_info.layout = p->layout;
 
-    p_info.renderPass = p->render_pass;
+    p_info.renderPass = lgpu->render_passes[indices->render_pass];
     p_info.subpass = 0;
 
     p_info.basePipelineHandle = VK_NULL_HANDLE;
@@ -1338,6 +1463,7 @@ int create_graphics_pipeline(vulkan_context *ctx, size_t lgpu_index,
     }
   }
 
+  p->vertex_count = vertices;
   p->pipeline = output_pipeline;
 
 #define DESTROY_IF_EXISTS(mod)                                                 \
@@ -1357,48 +1483,41 @@ int create_graphics_pipeline(vulkan_context *ctx, size_t lgpu_index,
   return 0;
 }
 
-int create_framebuffers(vulkan_context *ctx, size_t lgpu_index,
-                        size_t pipeline_index) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
-  struct pipeline *p = &lgpu->pipelines[pipeline_index];
+int create_framebuffers(vulkan_context *ctx, struct indices *indices) {
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
   struct active_swapchain *sc = &lgpu->current_swapchain;
 
-  VkFramebuffer *bufs =
-      (VkFramebuffer *)calloc(sc->view_count, sizeof(VkFramebuffer));
-
-  for (int i = 0; i < sc->view_count; ++i) {
+  for (int i = 0; i < sc->frame_count; ++i) {
     VkFramebufferCreateInfo fb_info = {0};
     fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_info.renderPass = p->render_pass;
+    fb_info.renderPass = lgpu->render_passes[indices->render_pass];
     fb_info.attachmentCount = 1;
-    fb_info.pAttachments = &sc->views[i];
+    fb_info.pAttachments = &sc->frames[i].view;
     fb_info.width = sc->swapchain_extent.width;
     fb_info.height = sc->swapchain_extent.height;
     fb_info.layers = 1;
 
     {
-      int success = vkCreateFramebuffer(lgpu->gpu, &fb_info, NULL, &bufs[i]);
+      int success = vkCreateFramebuffer(lgpu->gpu, &fb_info, NULL,
+                                        &sc->frames[i].framebuffer);
 
       if (VK_SUCCESS != success)
         return -1;
     }
-
-    sc->framebuffers = bufs;
-    sc->framebuffer_count = sc->view_count;
   }
 
   return 0;
 }
 
-int create_command_pool(vulkan_context *ctx, size_t lgpu_index) {
+int create_command_pool(vulkan_context *ctx, struct indices *indices) {
   VkCommandPool pool = VK_NULL_HANDLE;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
   VkCommandPoolCreateInfo p_info = {0};
   p_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   p_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  p_info.queueFamilyIndex = ctx->logical_gpus[lgpu_index].render_qf;
+  p_info.queueFamilyIndex = ctx->logical_gpus[indices->logical_gpu].render_qf;
 
   {
     int success = vkCreateCommandPool(lgpu->gpu, &p_info, NULL, &pool);
@@ -1412,11 +1531,11 @@ int create_command_pool(vulkan_context *ctx, size_t lgpu_index) {
   return 0;
 }
 
-int create_command_buffers(vulkan_context *ctx, size_t lgpu_index,
+int create_command_buffers(vulkan_context *ctx, struct indices *indices,
                            size_t amount) {
   VkCommandBuffer *buffers = NULL;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
   buffers = (VkCommandBuffer *)malloc(amount * sizeof(VkCommandBuffer));
   if (NULL == buffers) {
@@ -1444,10 +1563,9 @@ int create_command_buffers(vulkan_context *ctx, size_t lgpu_index,
   return 0;
 }
 
-int apply_command_buffer(vulkan_context *ctx, size_t lgpu_index,
-                         size_t pipeline_index, size_t buffer_index,
-                         size_t image_index) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
+int record_command_buffer(vulkan_context *ctx, struct indices *indices,
+                          uint8_t *pipeline_indices, size_t pipeline_count) {
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
   VkCommandBufferBeginInfo b_info = {0};
   b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1455,14 +1573,15 @@ int apply_command_buffer(vulkan_context *ctx, size_t lgpu_index,
   b_info.pInheritanceInfo = NULL;
 
   {
-    int success =
-        vkBeginCommandBuffer(lgpu->command_buffers[buffer_index], &b_info);
+    int success = vkBeginCommandBuffer(
+        lgpu->command_buffers[indices->command_buffer], &b_info);
   }
 
   VkRenderPassBeginInfo r_info = {0};
   r_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  r_info.renderPass = lgpu->pipelines[pipeline_index].render_pass;
-  r_info.framebuffer = lgpu->current_swapchain.framebuffers[image_index];
+  r_info.renderPass = lgpu->render_passes[indices->render_pass];
+  r_info.framebuffer =
+      lgpu->current_swapchain.frames[indices->swapchain_frame].framebuffer;
 
   r_info.renderArea.extent = lgpu->current_swapchain.swapchain_extent;
   r_info.renderArea.offset.x = 0;
@@ -1472,12 +1591,9 @@ int apply_command_buffer(vulkan_context *ctx, size_t lgpu_index,
   r_info.clearValueCount = 1;
   r_info.pClearValues = &clear;
 
-  VkCommandBuffer *cb = &lgpu->command_buffers[buffer_index];
+  VkCommandBuffer *cb = &lgpu->command_buffers[indices->command_buffer];
 
   vkCmdBeginRenderPass(*cb, &r_info, VK_SUBPASS_CONTENTS_INLINE);
-
-  vkCmdBindPipeline(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    lgpu->pipelines[pipeline_index].pipeline);
 
   {
     VkViewport vp = {0};
@@ -1498,7 +1614,13 @@ int apply_command_buffer(vulkan_context *ctx, size_t lgpu_index,
     vkCmdSetScissor(*cb, 0, 1, &scissor);
   }
 
-  vkCmdDraw(*cb, 3, 1, 0, 0);
+  for (int i = 0; i < pipeline_count; ++i) {
+    vkCmdBindPipeline(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      lgpu->pipelines[pipeline_indices[i]].pipeline);
+
+    // TODO: fix hard-coded stuff
+    vkCmdDraw(*cb, lgpu->pipelines[pipeline_indices[i]].vertex_count, 1, 0, 0);
+  }
 
   vkCmdEndRenderPass(*cb);
 
@@ -1511,20 +1633,95 @@ int apply_command_buffer(vulkan_context *ctx, size_t lgpu_index,
   return 0;
 }
 
-void draw_frame(vulkan_context *ctx, size_t lgpu_index, size_t pipeline_index,
-                size_t command_buffer_index, size_t render_queue_index,
-                size_t present_queue_index) {
+int submit_command_buffer(vulkan_context *ctx, struct indices *indices) {
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+
+  VkSubmitInfo s_info = {0};
+  s_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+  VkPipelineStageFlags sf = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  s_info.waitSemaphoreCount = 1;
+  s_info.pWaitSemaphores = &lgpu->current_swapchain.aquire_semaphore;
+  s_info.pWaitDstStageMask = &sf;
+
+  s_info.commandBufferCount = 1;
+  s_info.pCommandBuffers = &lgpu->command_buffers[indices->command_buffer];
+
+  s_info.signalSemaphoreCount = 1;
+  s_info.pSignalSemaphores =
+      &lgpu->current_swapchain.frames[indices->swapchain_frame].render_finished;
+
+  {
+    int success =
+        vkQueueSubmit(lgpu->render_queues[indices->render_queue], 1, &s_info,
+                      lgpu->current_swapchain.in_flight_fence);
+
+    if (VK_SUCCESS != success) {
+#ifdef DEBUG
+      fprintf(stderr, "Could not submit draw command\n");
+#endif
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+int present_swap_frame(vulkan_context *ctx, struct indices *indices) {
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+
+  {
+    uint32_t img_idx = indices->swapchain_frame;
+    VkPresentInfoKHR p_info = {0};
+    p_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+    p_info.waitSemaphoreCount = 1;
+    p_info.pWaitSemaphores =
+        &lgpu->current_swapchain.frames[img_idx].render_finished;
+
+    p_info.swapchainCount = 1;
+    p_info.pSwapchains = &lgpu->current_swapchain.swapchain;
+    p_info.pImageIndices = &img_idx;
+
+    p_info.pResults = NULL;
+
+    vkQueuePresentKHR(lgpu->presentation_queues[indices->present_queue],
+                      &p_info);
+  }
+
+  return 0;
+}
+
+void draw_frame(window_context *w_ctx, struct indices *indices,
+                uint8_t *pipeline_indices, size_t pipeline_count) {
+  // TODO: something with multiple in-flight frames. idk shit's weird bcs the
+  // tutorial is outdated asf
+  // https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Frames_in_flight
+
   uint32_t image_index = UINT32_MAX;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[lgpu_index];
+  vulkan_context *ctx = w_ctx->vk_context;
+  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
-  vkWaitForFences(lgpu->gpu, 1, &lgpu->current_swapchain.in_flight, VK_TRUE,
-                  UINT64_MAX);
-  vkResetFences(lgpu->gpu, 1, &lgpu->current_swapchain.in_flight);
+  vkWaitForFences(lgpu->gpu, 1, &lgpu->current_swapchain.in_flight_fence,
+                  VK_TRUE, UINT64_MAX);
 
-  vkAcquireNextImageKHR(lgpu->gpu, lgpu->current_swapchain.swapchain,
-                        UINT64_MAX, lgpu->current_swapchain.image_available,
-                        VK_NULL_HANDLE, &image_index);
+  {
+    VkResult success = vkAcquireNextImageKHR(
+        lgpu->gpu, lgpu->current_swapchain.swapchain, UINT64_MAX,
+        lgpu->current_swapchain.aquire_semaphore, VK_NULL_HANDLE, &image_index);
+
+    if (VK_ERROR_OUT_OF_DATE_KHR == success || VK_SUBOPTIMAL_KHR == success) {
+      struct swapchain_details new_details =
+          swapchain_compatibility(ctx, ctx->physical_gpu);
+
+      refresh_vulkan_swap_chain(w_ctx, &new_details, indices);
+
+      return;
+    }
+  }
+
+  vkResetFences(lgpu->gpu, 1, &lgpu->current_swapchain.in_flight_fence);
 
   if (UINT32_MAX == image_index) {
     // uhhhh
@@ -1534,50 +1731,26 @@ void draw_frame(vulkan_context *ctx, size_t lgpu_index, size_t pipeline_index,
     return;
   }
 
-  vkResetCommandBuffer(lgpu->command_buffers[command_buffer_index], 0);
+  indices->swapchain_frame = image_index;
 
-  apply_command_buffer(ctx, lgpu_index, pipeline_index, command_buffer_index,
-                       image_index);
+  vkResetCommandBuffer(lgpu->command_buffers[indices->command_buffer], 0);
 
-  VkSubmitInfo s_info = {0};
-  s_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  record_command_buffer(ctx, indices, pipeline_indices, pipeline_count);
 
-  VkPipelineStageFlags sf = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  s_info.waitSemaphoreCount = 1;
-  s_info.pWaitSemaphores = &lgpu->current_swapchain.image_available;
-  s_info.pWaitDstStageMask = &sf;
-
-  s_info.commandBufferCount = 1;
-  s_info.pCommandBuffers = &lgpu->command_buffers[command_buffer_index];
-
-  s_info.signalSemaphoreCount = 1;
-  s_info.pSignalSemaphores = &lgpu->current_swapchain.render_finished;
+  if (0 > submit_command_buffer(ctx, indices))
+    return;
 
   {
-    int success = vkQueueSubmit(lgpu->render_queues[render_queue_index], 1,
-                                &s_info, lgpu->current_swapchain.in_flight);
+    VkSemaphore temp = lgpu->current_swapchain.frames[indices->swapchain_frame]
+                           .write_available;
 
-    if (VK_SUCCESS != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not submit draw command\n");
-#endif
-      return;
-    }
+    lgpu->current_swapchain.frames[indices->swapchain_frame].write_available =
+        lgpu->current_swapchain.aquire_semaphore;
+
+    lgpu->current_swapchain.aquire_semaphore = temp;
   }
 
-  VkPresentInfoKHR p_info = {0};
-  p_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-  p_info.waitSemaphoreCount = 1;
-  p_info.pWaitSemaphores = &lgpu->current_swapchain.render_finished;
-
-  p_info.swapchainCount = 1;
-  p_info.pSwapchains = &lgpu->current_swapchain.swapchain;
-  p_info.pImageIndices = &image_index;
-
-  p_info.pResults = NULL;
-
-  vkQueuePresentKHR(lgpu->presentation_queues[present_queue_index], &p_info);
+  present_swap_frame(ctx, indices);
 
   return;
 }
