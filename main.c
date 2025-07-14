@@ -4,14 +4,17 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 #include <vulkan/vulkan_core.h>
 
 #define LOGICAL_GPU_COUNT 1
 
 window_context w_ctx = {.glfw_window = NULL,
-                        .window_dimensions = {500, 500},
+                        .window_dimensions = {690, 690},
                         .window_title = "YAY VULKAN RENDERER"};
+
+struct shape_buffer *shapes = NULL;
 
 static void sig_catcher(int signo) {
   const char *type = NULL;
@@ -151,7 +154,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
     vk_ctx->lg_capacity = LOGICAL_GPU_COUNT;
 
     VkPhysicalDeviceFeatures features = {0};
-    lgpu_index = new_logical_vulkan_gpu(vk_ctx, 1.0f, features, 1, 1);
+    lgpu_index = new_logical_vulkan_gpu(vk_ctx, 1.0f, features, 1, 1, 1);
 
     if (0 > lgpu_index) {
       // failure
@@ -177,6 +180,11 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
       return EXIT_FAILURE;
   }
 
+  for (int i = 0; i < lgpu->transfer_capacity; ++i) {
+    if (0 > new_vulkan_queue(vk_ctx, indices, TRANSFER_ONLY))
+      return EXIT_FAILURE;
+  }
+
 #ifdef DEBUG
   fprintf(stderr, "Successfully created Vulkan queues\n");
 #endif
@@ -193,20 +201,14 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
     }
   }
 
-  struct spirv_file triangle_vertex_shader =
-      read_spirv("shaders/triangle.vert.spv", VERTEX);
+  struct spirv_file default_pipeline_vert =
+      read_spirv("shaders/default.vert.spv", VERTEX);
 
-  struct spirv_file triangle_fragment_shader =
-      read_spirv("shaders/triangle.frag.spv", FRAGMENT);
+  struct spirv_file default_pipeline_frag =
+      read_spirv("shaders/default.frag.spv", FRAGMENT);
 
-  struct spirv_file square_vertex_shader =
-      read_spirv("shaders/square.vert.spv", VERTEX);
-
-  struct spirv_file square_fragment_shader =
-      read_spirv("shaders/square.frag.spv", FRAGMENT);
-
-  if (NULL == triangle_vertex_shader.buffer ||
-      NULL == triangle_fragment_shader.buffer) {
+  if (NULL == default_pipeline_vert.buffer ||
+      NULL == default_pipeline_frag.buffer) {
     fprintf(stderr, "Failed to load compiled shaders\n");
     return -1;
   }
@@ -226,45 +228,151 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
     }
 
     {
+      int success = allocate_command_pools(vk_ctx, indices, 2);
+      if (0 != success) {
+#ifdef DEBUG
+        fprintf(stderr, "Could not allocate memory for command pools\n");
+#endif
+      }
+    }
+
+    {
+      indices->command_pool = 0;
+
+      {
+        int success = create_command_pool(vk_ctx, indices, RENDER_POOL);
+        if (0 != success) {
+#ifdef DEBUG
+          fprintf(stderr, "Could not create render command pool\n");
+#endif
+          return success;
+        }
+      }
+      {
+        int success = create_command_buffers(vk_ctx, indices, 1);
+        if (0 != success) {
+#ifdef DEBUG
+          fprintf(stderr, "Could not create render command buffer\n");
+#endif
+          return success;
+        }
+      }
+    }
+
+    {
+      indices->command_pool = 1;
+
+      {
+        int success = create_command_pool(vk_ctx, indices, TRANSFER_POOL);
+        if (0 != success) {
+#ifdef DEBUG
+          fprintf(stderr, "Could not create transfer command pool\n");
+#endif
+          return success;
+        }
+      }
+      {
+        int success = create_command_buffers(vk_ctx, indices, 1);
+        if (0 != success) {
+#ifdef DEBUG
+          fprintf(stderr, "Could not create transfer command buffer\n");
+#endif
+          return success;
+        }
+      }
+    }
+
+    {
       if (0 > allocate_render_passes(vk_ctx, indices, 1))
         return -1;
     }
 
     add_render_pass(vk_ctx, indices, pass);
 
+    struct vertex_attributes attr = {0};
+    VkVertexInputBindingDescription b_desc = {0};
+    VkVertexInputAttributeDescription a_descs[2] = {0};
+
+    b_desc.binding = 0;
+    b_desc.stride = sizeof(struct vertex);
+    b_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    a_descs[0].binding = 0;
+    a_descs[0].location = 0;
+    a_descs[0].format = VK_FORMAT_R32G32_SFLOAT;
+    a_descs[0].offset = offsetof(struct vertex, position);
+
+    a_descs[1].binding = 0;
+    a_descs[1].location = 1;
+    a_descs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    a_descs[1].offset = offsetof(struct vertex, color);
+
+    attr.attribute_count = 2;
+    attr.binding_count = 1;
+    attr.bindings = &b_desc;
+    attr.attributes = a_descs;
+
     {
-      struct spirv_file spirvs[] = {triangle_vertex_shader,
-                                    triangle_fragment_shader};
+      size_t shape_count = 0;
+
+      struct spirv_file spirvs[] = {default_pipeline_vert,
+                                    default_pipeline_frag};
 
       struct shader_set shader_set = {0};
+
+      struct vertex_bundle triangle_vb = {0};
+      struct vertex triangle_vertices[] = {
+          {.position = {-0.15f, -0.65f}, .color = {1.0f, 0.0f, 0.0f}},
+          {.position = {0.35f, 0.35f}, .color = {0.0f, 1.0f, 0.0f}},
+          {.position = {-0.65f, 0.35f}, .color = {0.0f, 0.0f, 1.0f}}};
+
+      const size_t v1_size =
+          sizeof(triangle_vertices) / sizeof(*triangle_vertices);
+
+      init_vertices_struct(&triangle_vb);
+      allocate_vertices(&triangle_vb, v1_size);
+
+      for (int i = 0; i < v1_size; ++i) {
+        append_vertex(&triangle_vb, triangle_vertices[i]);
+      }
+
+      shape_buffer_init(&shapes[shape_count]);
+      shape_buffer_from_vertices(vk_ctx, indices, &shapes[shape_count++],
+                                 &triangle_vb);
+
+      struct vertex_bundle square_vb = {0};
+      struct vertex square_vertices[] = {
+          {.position = {0.15f, 0.15f}, .color = {1.0f, 0.0f, 0.0f}},
+          {.position = {0.65f, 0.15f}, .color = {0.0f, 1.0f, 0.0f}},
+          {.position = {0.65f, 0.65f}, .color = {0.0f, 0.0f, 1.0f}},
+          {.position = {0.15f, 0.65f}, .color = {1.0f, 1.0f, 1.0f}}};
+
+      const size_t v2_size = sizeof(square_vertices) / sizeof(*square_vertices);
+
+      init_vertices_struct(&square_vb);
+      allocate_vertices(&square_vb, v2_size);
+
+      for (int i = 0; i < v2_size; ++i) {
+        append_vertex(&square_vb, square_vertices[i]);
+      }
+
+      uint16_t square_vertex_indices[] = {0, 1, 2, 2, 0, 3};
+      square_vb.indices = square_vertex_indices;
+      square_vb.index_count =
+          sizeof(square_vertex_indices) / sizeof(*square_vertex_indices);
+
+      shape_buffer_init(&shapes[shape_count]);
+      shape_buffer_from_vertices(vk_ctx, indices, &shapes[shape_count++],
+                                 &square_vb);
 
       indices->pipeline = 0;
-      int success = create_graphics_pipeline(vk_ctx, indices, spirvs,
-                                             sizeof(spirvs) / sizeof(*spirvs),
-                                             &shader_set, 3);
+      int success = create_graphics_pipeline(
+          vk_ctx, indices, spirvs, sizeof(spirvs) / sizeof(*spirvs),
+          &shader_set, &attr, shapes, shape_count);
 
       if (0 != success) {
 #ifdef DEBUG
-        fprintf(stderr, "Could not create graphics pipelines\n");
-#endif
-        return success;
-      }
-    }
-
-    {
-      struct spirv_file spirvs[] = {square_vertex_shader,
-                                    square_fragment_shader};
-
-      struct shader_set shader_set = {0};
-
-      indices->pipeline = 1;
-      int success = create_graphics_pipeline(vk_ctx, indices, spirvs,
-                                             sizeof(spirvs) / sizeof(*spirvs),
-                                             &shader_set, 4);
-
-      if (0 != success) {
-#ifdef DEBUG
-        fprintf(stderr, "Could not create graphics pipelines\n");
+        fprintf(stderr, "Could not create graphics pipeline\n");
 #endif
         return success;
       }
@@ -285,26 +393,6 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
     }
   }
 
-  {
-    int success = create_command_pool(vk_ctx, indices);
-    if (0 != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not create command pool\n");
-#endif
-      return success;
-    }
-  }
-
-  {
-    int success = create_command_buffers(vk_ctx, indices, 1);
-    if (0 != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not create command buffer\n");
-#endif
-      return success;
-    }
-  }
-
 #ifdef DEBUG
   fprintf(stderr, "Successfully created framebuffers and command buffers\n");
 #endif
@@ -317,6 +405,8 @@ int main() {
   signal(SIGINT, sig_catcher);
   signal(SIGABRT, sig_catcher);
   signal(SIGKILL, sig_catcher);
+
+  shapes = (struct shape_buffer *)calloc(20, sizeof(*shapes));
 
   const char *val_layers[] = {"VK_LAYER_KHRONOS_validation"};
   const char *ext[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -358,8 +448,23 @@ int main() {
 
   uint8_t p_idx[] = {0};
 
+  struct timespec ts = {0};
+  struct timespec new_ts = {0};
+
+  indices.command_pool = 0;
+
   while (!glfwWindowShouldClose(w_ctx.glfw_window)) {
     glfwPollEvents();
+
+    // {
+    //   timespec_get(&new_ts, TIME_UTC);
+    //   uint64_t diff = new_ts.tv_nsec - ts.tv_nsec;
+    //   uint64_t fps = (1000 * 1000 * 1000) / diff;
+    //   fprintf(stderr, "\r      ");
+    //   fprintf(stderr, "\r%lu", fps);
+    //   ts = new_ts;
+    // }
+
     draw_frame(&w_ctx, &indices, p_idx, sizeof(p_idx) / sizeof(*p_idx));
   }
 
