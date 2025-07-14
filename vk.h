@@ -142,6 +142,9 @@ struct queue_family_requirements {
 
   int minimum_queues;
 
+  // supports up to 64 qf indices. should be fine
+  uint64_t index_blacklist_bits;
+
   enum queue_family_type {
     RENDER = 0,
     PRESENTATION = 1,

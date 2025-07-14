@@ -471,7 +471,7 @@ static uint8_t qf_meets_requirements(VkQueueFamilyProperties fam,
     break;
 
   case TRANSFER_ONLY:
-    if (req->render.qf_flags & VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)
+    if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
       return FALSE;
     // else we fall through to case RENDER to see if other things match
 
@@ -516,6 +516,9 @@ vulkan_queue_family(vulkan_context *ctx,
 
   int64_t best_index = -1;
   for (int64_t i = 0; i < qf_count; ++i) {
+    if (reqs->index_blacklist_bits & (1 << i))
+      continue;
+
     VkQueueFamilyProperties *prop = &props[i];
 
     if (qf_meets_requirements(*prop, reqs, i)) {
@@ -607,6 +610,13 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
     reqs.reqs.present.surface = ctx->vk_surface;
     presentation_qf = vulkan_queue_family(ctx, &reqs);
 
+    if ((render_qf.index == presentation_qf.index) &&
+        (render_queues + presentation_queues > render_qf.family.queueCount)) {
+      // reroll presentation_qf
+      reqs.index_blacklist_bits = (1 << render_qf.index);
+      presentation_qf = vulkan_queue_family(ctx, &reqs);
+    }
+
     if (0 > presentation_qf.index)
       return -3;
   }
@@ -625,6 +635,7 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
   lgpu.transfer_qf =
       CONDITIONAL(-1 < transfer_qf.index, transfer_qf.index, render_qf.index);
 
+  // should always be true. i guess we can still check
   if (-1 < render_qf.index) {
     ++infos_count;
 
@@ -633,6 +644,11 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
     r_info->queueFamilyIndex = render_qf.index;
     r_info->queueCount = render_queues;
     r_info->pQueuePriorities = &priority;
+
+    if (presentation_qf.index == render_qf.index) {
+      r_info->queueCount += presentation_queues;
+      present = TRUE;
+    }
 
     render = TRUE;
   }
@@ -660,9 +676,6 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
 
     transfer = TRUE;
 
-#ifdef DEBUG
-    fprintf(stderr, "Building transfer queue create info\n");
-#endif
   } else if (0 < transfer_queues &&
              render_transfer_overlap != transfer_queues) {
     ++infos_count;
@@ -674,11 +687,23 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
     t_info->pQueuePriorities = &priority;
 
     transfer = TRUE;
+  }
 
 #ifdef DEBUG
-    fprintf(stderr, "Building transfer queue create info\n");
-#endif
+  fprintf(stderr, " Selected queue family %lu for rendering (%u queue%s)\n",
+          render_qf.index, render_queues, (render_queues != 1) ? "s" : "");
+  fprintf(stderr, " Selected queue family %lu for presenting (%u queue%s)\n",
+          presentation_qf.index, presentation_queues,
+          (presentation_queues != 1) ? "s" : "");
+  fprintf(stderr, " Selected queue family %lu for transfering (%u queue%s)\n",
+          transfer_qf.index, transfer_queues,
+          (transfer_queues != 1) ? "s" : "");
+
+  for (int i = 0; i < infos_count; ++i) {
+    fprintf(stderr, " Requesting %u queues from queue family %u\n",
+            infos[i].queueCount, infos[i].queueFamilyIndex);
   }
+#endif
 
   lgpu.render_transfer_overlap = render_transfer_overlap;
 
