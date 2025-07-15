@@ -7,7 +7,6 @@
 #include <string.h>
 
 #include <fcntl.h>
-#include <vk_video/vulkan_video_codec_av1std.h>
 #include <vulkan/vulkan_core.h>
 
 #define GLFW_INCLUDE_VULKAN
@@ -15,11 +14,6 @@
 
 #include <cglm/mat4.h>
 #include <cglm/vec4.h>
-
-#define WINDOW_WIDTH 500
-#define WINDOW_HEIGHT 500
-
-#define LOGICAL_GPU_COUNT 1
 
 #define TRUE 1
 #define FALSE 0
@@ -690,14 +684,21 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
   }
 
 #ifdef DEBUG
-  fprintf(stderr, " Selected queue family %lu for rendering (%u queue%s)\n",
-          render_qf.index, render_queues, (render_queues != 1) ? "s" : "");
-  fprintf(stderr, " Selected queue family %lu for presenting (%u queue%s)\n",
-          presentation_qf.index, presentation_queues,
+  fprintf(stderr, " Selected queue family %d for rendering (%u queue%s)\n",
+          lgpu.render_qf, render_queues, (render_queues != 1) ? "s" : "");
+
+  fprintf(stderr, " Selected queue family %d for presenting (%u queue%s)\n",
+          lgpu.presentation_qf, presentation_queues,
           (presentation_queues != 1) ? "s" : "");
-  fprintf(stderr, " Selected queue family %lu for transfering (%u queue%s)\n",
-          transfer_qf.index, transfer_queues,
-          (transfer_queues != 1) ? "s" : "");
+
+  fprintf(stderr, " Selected queue family %d for transfering (%u queue%s)\n",
+          lgpu.transfer_qf, transfer_queues, (transfer_queues != 1) ? "s" : "");
+
+  if (render_transfer_overlap > 0)
+    fprintf(stderr,
+            "  (%lu overlapping queue%s between rendering and transfering "
+            "queues)\n",
+            render_transfer_overlap, (render_transfer_overlap != 1) ? "s" : "");
 
   for (int i = 0; i < infos_count; ++i) {
     fprintf(stderr, " Requesting %u queues from queue family %u\n",
