@@ -1,62 +1,56 @@
-.PHONY: all prep release debug libs main clean shaders
+.PHONY: all prep release debug libs test clean shaders
+
+include make/*.mk
 
 CC = clang
+FILE_EXT = .out
+
 CFLAGS = -std=c99
 LDFLAGS = -lglfw -lvulkan
 
-PREFIX = fpx
+RELEASE_FLAGS = -O1
+DEBUG_FLAGS = -DDEBUG -g -O0
 
 BUILD_FOLDER = build
-
 SOURCE_FOLDER = src
 INCLUDE_DIRS = include modules
 
 CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I./$(dir))
 
-LIB_SOURCES = vk.c
+DEBUG_APP = $(BUILD_FOLDER)/debug$(FILE_EXT)
+LIB_OBJECTS = vk
 
-SHADER_DIR = shaders
-SHADER_SRC = default.vert default.frag
-
-all:
-	$(MAKE) release
-	$(MAKE) debug
+all: libs
 
 prep:
 	mkdir -p build/objects
 
-release: EXTRA_FLAGS = -O1
-release: FILENAME = release
-release: main
+release: $(OBJECTS_RELEASE)
+debug: $(OBJECTS_DEBUG)
+test: $(DEBUG_APP)
 
-debug: EXTRA_FLAGS = -DDEBUG -O0 -g
-debug: FILENAME = debug
-debug: main
+libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
 
-libs: prep $(LIB_SOURCES)
+$(OBJECTS_RELEASE): prep
+$(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%.o: $(SOURCE_FOLDER)/%.c
+	$(CC) $(CFLAGS) $(RELEASE_FLAGS) \
+		-c $< -o $@
 
-$(LIB_SOURCES):
-	$(CC) \
-		$(CFLAGS) $(EXTRA_FLAGS) \
-		-c $(SOURCE_FOLDER)/$@ \
-		-o $(BUILD_FOLDER)/objects/$(PREFIX)_$(@:.c=.o)
+$(OBJECTS_DEBUG): prep
+$(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%_debug.o: $(SOURCE_FOLDER)/%.c
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) \
+		-c $< -o $@
 
-.PHONY: $(LIB_SOURCES)
-
-main: libs
-	$(CC) \
-		$(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) \
+$(DEBUG_APP): $(OBJECTS_DEBUG)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) \
 		$(SOURCE_FOLDER)/main.c \
-		$(BUILD_FOLDER)/objects/*.o \
-		-o $(FILENAME).out
+		$(BUILD_FOLDER)/objects/*_debug.o \
+		-o $@
 
 clean:
 	rm -rf ./$(BUILD_FOLDER) || true
-	rm *.out || true
 
-shaders: $(SHADER_SRC)
+shaders: $(SHADER_FILES)
 
-$(SHADER_SRC):
-	glslc $(SHADER_DIR)/$@ -o $(SHADER_DIR)/$@.spv
-
-.PHONY: $(SHADER_SRC)
+$(SHADER_FILES):
+	glslc $(basename $@) -o $@
