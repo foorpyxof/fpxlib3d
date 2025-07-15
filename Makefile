@@ -1,32 +1,62 @@
-.PHONY: debug release all compile clean clean_libs shaders
+.PHONY: all prep release debug libs main clean shaders
 
 CC = clang
-CFLAGS = -std=c17
-LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi
+CFLAGS = -std=c99
+LDFLAGS = -lglfw -lvulkan
+
+PREFIX = fpx
+
+BUILD_FOLDER = build
+
+SOURCE_FOLDER = src
+INCLUDE_DIRS = include modules
+
+CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I./$(dir))
+
+LIB_SOURCES = vk.c
+
+SHADER_DIR = shaders
+SHADER_SRC = default.vert default.frag
 
 all:
 	$(MAKE) release
 	$(MAKE) debug
 
+prep:
+	mkdir -p build/objects
+
 release: EXTRA_FLAGS = -O1
 release: FILENAME = release
-release: clean_libs main
+release: main
 
 debug: EXTRA_FLAGS = -DDEBUG -O0 -g
 debug: FILENAME = debug
-debug: clean_libs main
+debug: main
 
-vk.o:
-	$(CC) $(CFLAGS) -c $(EXTRA_FLAGS) vk.c -o $@
+libs: prep $(LIB_SOURCES)
 
-main: vk.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) main.c $^ -o $(FILENAME).out
+$(LIB_SOURCES):
+	$(CC) \
+		$(CFLAGS) $(EXTRA_FLAGS) \
+		-c $(SOURCE_FOLDER)/$@ \
+		-o $(BUILD_FOLDER)/objects/$(PREFIX)_$(@:.c=.o)
 
-clean_libs:
-	rm *.o 2>/dev/null || true
+.PHONY: $(LIB_SOURCES)
 
-clean: clean_libs
-	rm *.out 2>/dev/null || true
+main: libs
+	$(CC) \
+		$(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) \
+		$(SOURCE_FOLDER)/main.c \
+		$(BUILD_FOLDER)/objects/*.o \
+		-o $(FILENAME).out
 
-shaders:
-	bash -c './compile_shaders.sh'
+clean:
+	rm -rf ./$(BUILD_FOLDER) || true
+	rm *.out || true
+
+shaders: $(SHADER_SRC)
+
+$(SHADER_SRC):
+	glslc $(SHADER_DIR)/$@ -o $(SHADER_DIR)/$@.spv
+
+.PHONY: $(SHADER_SRC)

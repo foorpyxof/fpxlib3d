@@ -140,7 +140,7 @@ struct queue_family_requirements {
     } present;
   } reqs;
 
-  int minimum_queues;
+  size_t minimum_queues;
 
   // supports up to 64 qf indices. should be fine
   uint64_t index_blacklist_bits;
@@ -304,8 +304,8 @@ vulkan_queue_family(vulkan_context *, struct queue_family_requirements *);
 // return -4: error while allocating memory
 // return -5: error while creating the logical gpu
 int new_logical_vulkan_gpu(vulkan_context *, float priority,
-                           VkPhysicalDeviceFeatures, int render_queues,
-                           int presentation_queues, int transfer_queues);
+                           VkPhysicalDeviceFeatures, size_t render_queues,
+                           size_t presentation_queues, size_t transfer_queues);
 
 /*
  * INDICES READ:

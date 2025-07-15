@@ -78,10 +78,10 @@ uint8_t validation_layers_supported(const char **validation_layers,
 
   vkEnumerateInstanceLayerProperties(&available, available_layers);
 
-  for (int i = 0; i < layer_count; ++i) {
+  for (size_t i = 0; i < layer_count; ++i) {
     uint8_t found = FALSE;
 
-    for (int j = 0; j < available; ++j) {
+    for (uint32_t j = 0; j < available; ++j) {
       if (0 == strcmp(validation_layers[i], available_layers[j].layerName)) {
         found = TRUE;
         break;
@@ -121,10 +121,10 @@ uint8_t device_extensions_supported(VkPhysicalDevice dev,
   vkEnumerateDeviceExtensionProperties(dev, NULL, &available,
                                        available_extensions);
 
-  for (int i = 0; i < extension_count; ++i) {
+  for (size_t i = 0; i < extension_count; ++i) {
     uint8_t found = FALSE;
 
-    for (int j = 0; j < available; ++j) {
+    for (uint32_t j = 0; j < available; ++j) {
       if (0 == strcmp(extensions[i], available_extensions[j].extensionName)) {
         found = TRUE;
         break;
@@ -161,9 +161,9 @@ int create_vulkan_window(window_context *ctx) {
       1 > ctx->window_dimensions[1])
     return -99;
 
+#ifdef FPX_VK_USE_VALIDATION_LAYERS
   const char **val_layers = ctx->vk_context->validation_layers;
 
-#ifdef FPX_VK_USE_VALIDATION_LAYERS
   // we check for the queried validation layers, if need be.
   // if no layers are set to be queried, we just keep going
   if (NULL != val_layers &&
@@ -232,7 +232,7 @@ static void clean_swapchain(struct logical_gpu_info *lgpu) {
   struct active_swapchain *sc = &lgpu->current_swapchain;
 
   if (NULL != sc->frames)
-    for (int i = 0; i < sc->frame_count; ++i) {
+    for (size_t i = 0; i < sc->frame_count; ++i) {
       struct swapchain_frame *f = &sc->frames[i];
       if (VK_NULL_HANDLE != sc->frames[i].framebuffer)
         vkDestroyFramebuffer(lgpu->gpu, sc->frames[i].framebuffer, NULL);
@@ -268,7 +268,7 @@ static void destroy_lgpu(vulkan_context *vk_ctx, size_t lgpu_index) {
 #endif
 
   if (NULL != lgpu->command_pools) {
-    for (int i = 0; i < lgpu->command_pool_capacity; ++i) {
+    for (size_t i = 0; i < lgpu->command_pool_capacity; ++i) {
       if (VK_NULL_HANDLE != lgpu->command_pools[i].pool)
         vkDestroyCommandPool(lgpu->gpu, lgpu->command_pools[i].pool, NULL);
 
@@ -287,7 +287,7 @@ static void destroy_lgpu(vulkan_context *vk_ctx, size_t lgpu_index) {
 #endif
 
   if (NULL != lgpu->render_passes)
-    for (int i = 0; i < lgpu->render_pass_capacity; ++i) {
+    for (size_t i = 0; i < lgpu->render_pass_capacity; ++i) {
       if (VK_NULL_HANDLE != lgpu->render_passes[i])
         vkDestroyRenderPass(lgpu->gpu, lgpu->render_passes[i], NULL);
     }
@@ -298,7 +298,7 @@ static void destroy_lgpu(vulkan_context *vk_ctx, size_t lgpu_index) {
   fprintf(stderr, " all render passes destroyed\n");
 #endif
 
-  for (int i = 0; i < lgpu->pipeline_capacity; ++i) {
+  for (size_t i = 0; i < lgpu->pipeline_capacity; ++i) {
     struct pipeline *p = &lgpu->pipelines[i];
 
     if (NULL != p->pipeline)
@@ -311,7 +311,7 @@ static void destroy_lgpu(vulkan_context *vk_ctx, size_t lgpu_index) {
     // XXX: this could definitely cause problems later on, if the shapes are
     // supposed to be reused. it's probably fine tho? especially since we're
     // destroying the LGPU in this function anyway
-    for (int i = 0; i < p->shape_count; ++i) {
+    for (size_t i = 0; i < p->shape_count; ++i) {
       free_shape_buffer(vk_ctx, &in, &p->shapes[i]);
     }
     FREE_SAFE(p->shapes);
@@ -385,7 +385,7 @@ int choose_vulkan_gpu(vulkan_context *ctx,
     int success =
         vkEnumeratePhysicalDevices(ctx->vk_instance, &gpus_available, NULL);
 
-    if (0 == gpus_available) {
+    if (0 == gpus_available || VK_SUCCESS != success) {
       fprintf(stderr, "No Vulkan compatible GPU's were found!\n");
       return -1;
     }
@@ -411,7 +411,7 @@ int choose_vulkan_gpu(vulkan_context *ctx,
   vkEnumeratePhysicalDevices(ctx->vk_instance, &gpus_available, gpus);
 
   // auto sort the GPU's based on score, high to low
-  for (int i = 0; i < gpus_available; ++i) {
+  for (uint32_t i = 0; i < gpus_available; ++i) {
     if (ctx->lgpu_extension_count > 0 &&
         FALSE == device_extensions_supported(gpus[i], ctx->lgpu_extensions,
                                              ctx->lgpu_extension_count))
@@ -539,8 +539,9 @@ vulkan_queue_family(vulkan_context *ctx,
 }
 
 int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
-                           VkPhysicalDeviceFeatures features, int render_queues,
-                           int presentation_queues, int transfer_queues) {
+                           VkPhysicalDeviceFeatures features,
+                           size_t render_queues, size_t presentation_queues,
+                           size_t transfer_queues) {
   if (ctx->lg_count >= ctx->lg_capacity)
     return -1;
 
@@ -684,14 +685,14 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
   }
 
 #ifdef DEBUG
-  fprintf(stderr, " Selected queue family %d for rendering (%u queue%s)\n",
+  fprintf(stderr, " Selected queue family %d for rendering (%lu queue%s)\n",
           lgpu.render_qf, render_queues, (render_queues != 1) ? "s" : "");
 
-  fprintf(stderr, " Selected queue family %d for presenting (%u queue%s)\n",
+  fprintf(stderr, " Selected queue family %d for presenting (%lu queue%s)\n",
           lgpu.presentation_qf, presentation_queues,
           (presentation_queues != 1) ? "s" : "");
 
-  fprintf(stderr, " Selected queue family %d for transfering (%u queue%s)\n",
+  fprintf(stderr, " Selected queue family %d for transfering (%lu queue%s)\n",
           lgpu.transfer_qf, transfer_queues, (transfer_queues != 1) ? "s" : "");
 
   if (render_transfer_overlap > 0)
@@ -700,7 +701,7 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
             "queues)\n",
             render_transfer_overlap, (render_transfer_overlap != 1) ? "s" : "");
 
-  for (int i = 0; i < infos_count; ++i) {
+  for (size_t i = 0; i < infos_count; ++i) {
     fprintf(stderr, " Requesting %u queues from queue family %u\n",
             infos[i].queueCount, infos[i].queueFamilyIndex);
   }
@@ -825,23 +826,23 @@ static VkSurfaceFormatKHR *surface_format_picker(VkPhysicalDevice dev,
                                                  VkSurfaceFormatKHR *fmts,
                                                  size_t fmts_count,
                                                  VkSurfaceFormatKHR *output) {
-  uint32_t format_count = 0;
+  uint32_t formats_available = 0;
   VkSurfaceFormatKHR *formats = NULL;
 
-  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &format_count, NULL);
+  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &formats_available, NULL);
 
-  if (0 == format_count)
+  if (0 == formats_available)
     return NULL;
 
-  formats =
-      (VkSurfaceFormatKHR *)calloc(format_count, sizeof(VkSurfaceFormatKHR));
+  formats = (VkSurfaceFormatKHR *)calloc(formats_available,
+                                         sizeof(VkSurfaceFormatKHR));
 
   if (NULL == formats) {
     perror("calloc()");
     return NULL;
   }
 
-  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &format_count, formats);
+  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &formats_available, formats);
 
   if (0 == fmts_count) {
     *output = formats[0];
@@ -849,8 +850,8 @@ static VkSurfaceFormatKHR *surface_format_picker(VkPhysicalDevice dev,
     return output;
   }
 
-  for (int i = 0; i < fmts_count; ++i) {
-    for (int j = 0; j < format_count; ++j) {
+  for (size_t i = 0; i < fmts_count; ++i) {
+    for (uint32_t j = 0; j < formats_available; ++j) {
       if (fmts[i].format == formats[j].format &&
           fmts[i].colorSpace == formats[j].colorSpace) {
         FREE_SAFE(formats);
@@ -869,22 +870,22 @@ static VkPresentModeKHR *present_mode_picker(VkPhysicalDevice dev,
                                              VkPresentModeKHR *md,
                                              size_t md_count,
                                              VkPresentModeKHR *output) {
-  uint32_t modes_count = 0;
+  uint32_t modes_available = 0;
   VkPresentModeKHR *modes = NULL;
 
-  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_count, NULL);
+  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_available, NULL);
 
-  if (0 == modes_count)
+  if (0 == modes_available)
     return NULL;
 
-  modes = (VkPresentModeKHR *)calloc(modes_count, sizeof(VkPresentModeKHR));
+  modes = (VkPresentModeKHR *)calloc(modes_available, sizeof(VkPresentModeKHR));
 
   if (NULL == modes) {
     perror("calloc()");
     return NULL;
   }
 
-  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_count, modes);
+  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_available, modes);
 
   if (0 == md_count) {
     *output = modes[0];
@@ -892,8 +893,8 @@ static VkPresentModeKHR *present_mode_picker(VkPhysicalDevice dev,
     return output;
   }
 
-  for (int i = 0; i < md_count; ++i) {
-    for (int j = 0; j < modes_count; ++j) {
+  for (size_t i = 0; i < md_count; ++i) {
+    for (uint32_t j = 0; j < modes_available; ++j) {
       if (md[i] == modes[j]) {
         FREE_SAFE(modes);
         *output = md[i];
@@ -1072,7 +1073,7 @@ int create_vulkan_swap_chain(window_context *ctx,
 
   vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &frame_count, images);
 
-  for (int i = 0; i < frame_count; ++i) {
+  for (uint32_t i = 0; i < frame_count; ++i) {
     VkImageViewCreateInfo v_info = {0};
 
     v_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1121,7 +1122,7 @@ int create_vulkan_swap_chain(window_context *ctx,
     VkSemaphoreCreateInfo sema_info = {0};
     sema_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    for (int i = 0; i < frame_count; ++i) {
+    for (uint32_t i = 0; i < frame_count; ++i) {
       if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL,
                                           &frames[i].write_available) ||
           VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL,
@@ -1258,7 +1259,7 @@ struct spirv_file read_spirv(const char *filename, enum shader_stage stage) {
     return file;
   }
 
-  if (size > fread(file.buffer, 1, size, fp)) {
+  if (size > (int)fread(file.buffer, 1, size, fp)) {
 #ifdef DEBUG
     fprintf(stderr, "Read too little from SPIR-V file\n");
 #endif
@@ -1491,7 +1492,7 @@ int append_vertex(struct vertex_bundle *vertices, struct vertex v) {
   vertices->vertices[vertices->vertex_count] = v;
 
   return (vertices->vertex_count++);
-};
+}
 
 int allocate_pipelines(vulkan_context *ctx, const struct indices *indices,
                        size_t amount) {
@@ -1560,7 +1561,7 @@ static void new_buffer(VkPhysicalDevice dev, struct logical_gpu_info *lgpu,
   vkGetPhysicalDeviceMemoryProperties(dev, &mem_props);
 
   int idx = -1;
-  for (int i = 0; i < mem_props.memoryTypeCount; ++i) {
+  for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
     if ((mem_reqs.memoryTypeBits & (1 << i)) &&
         (mem_props.memoryTypes[i].propertyFlags & mem_prop_flags) ==
             mem_prop_flags)
@@ -1679,7 +1680,7 @@ static struct buffer_mem_pair new_vertex_buffer(VkPhysicalDevice dev,
   size_t buffer_size = v->vertex_count * sizeof(v->vertices[0]);
 
   VkCommandPool transfer_pool = VK_NULL_HANDLE;
-  for (int i = 0; i < lgpu->command_pool_capacity; ++i) {
+  for (size_t i = 0; i < lgpu->command_pool_capacity; ++i) {
     if (lgpu->command_pools[i].type == TRANSFER_POOL)
       transfer_pool = lgpu->command_pools[i].pool;
   }
@@ -1718,7 +1719,7 @@ static struct buffer_mem_pair new_index_buffer(VkPhysicalDevice dev,
   size_t buffer_size = v->index_count * sizeof(v->indices[0]);
 
   VkCommandPool transfer_pool = VK_NULL_HANDLE;
-  for (int i = 0; i < lgpu->command_pool_capacity; ++i) {
+  for (size_t i = 0; i < lgpu->command_pool_capacity; ++i) {
     if (lgpu->command_pools[i].type == TRANSFER_POOL)
       transfer_pool = lgpu->command_pools[i].pool;
   }
@@ -1824,14 +1825,14 @@ int create_graphics_pipeline(vulkan_context *ctx, const struct indices *indices,
 
   NULL_CHECK(shapes, -1);
 
-  uint32_t imported_modules = 0;
+  // uint32_t imported_modules = 0;
 
   uint8_t infos_created = 0;
   VkPipelineShaderStageCreateInfo stage_infos[8] = {0};
 
   if (NULL != spirvs && 0 < spirv_count) {
     // populate shader_set struct
-    for (int i = 0; i < spirv_count; ++i) {
+    for (size_t i = 0; i < spirv_count; ++i) {
       VkShaderModule *module = select_module_stage(set, spirvs[i].stage);
       if (VK_NULL_HANDLE != *module)
         continue;
@@ -1843,7 +1844,7 @@ int create_graphics_pipeline(vulkan_context *ctx, const struct indices *indices,
         return -2;
       }
 
-      ++imported_modules;
+      // ++imported_modules;
     }
 
 #define PIPELINE_STAGE(mod, stage_bit)                                         \
@@ -2033,8 +2034,6 @@ int create_graphics_pipeline(vulkan_context *ctx, const struct indices *indices,
   }
 
   {
-    VkPipelineLayout old_layout = p->layout;
-
     VkPipelineLayoutCreateInfo pl_info = {0};
     pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pl_info.setLayoutCount = 0;
@@ -2114,7 +2113,7 @@ int create_framebuffers(vulkan_context *ctx, const struct indices *indices) {
   struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
   struct active_swapchain *sc = &lgpu->current_swapchain;
 
-  for (int i = 0; i < sc->frame_count; ++i) {
+  for (size_t i = 0; i < sc->frame_count; ++i) {
     VkFramebufferCreateInfo fb_info = {0};
     fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fb_info.renderPass = lgpu->render_passes[indices->render_pass];
@@ -2246,6 +2245,11 @@ int record_command_buffer(vulkan_context *ctx, const struct indices *indices,
         vkBeginCommandBuffer(lgpu->command_pools[indices->command_pool]
                                  .buffers[indices->command_buffer],
                              &b_info);
+
+    if (VK_SUCCESS != success) {
+      // out of memory
+      return -1;
+    }
   }
 
   VkRenderPassBeginInfo r_info = {0};
@@ -2289,7 +2293,7 @@ int record_command_buffer(vulkan_context *ctx, const struct indices *indices,
   struct pipeline *p = &lgpu->pipelines[pipeline_index];
   vkCmdBindPipeline(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
 
-  for (int i = 0; i < p->shape_count; ++i) {
+  for (size_t i = 0; i < p->shape_count; ++i) {
 
     // TODO: fix hard-coded stuff
 
@@ -2331,7 +2335,7 @@ int record_command_buffer(vulkan_context *ctx, const struct indices *indices,
   {
     int success = vkEndCommandBuffer(*cb);
     if (VK_SUCCESS != success)
-      return -1;
+      return -2;
   }
 
   return 0;
@@ -2441,7 +2445,7 @@ void draw_frame(window_context *w_ctx, struct indices *indices,
 
   // XXX: this will probs break when using more than 1 pipeline.
   // just got a feeling. problem for later tho
-  for (int i = 0; i < pipeline_count; ++i) {
+  for (size_t i = 0; i < pipeline_count; ++i) {
     vkResetCommandBuffer(lgpu->command_pools[indices->command_pool]
                              .buffers[indices->command_buffer],
                          0);

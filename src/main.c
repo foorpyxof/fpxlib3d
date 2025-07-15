@@ -170,17 +170,17 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
 
   struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[lgpu_index];
 
-  for (int i = 0; i < lgpu->render_capacity; ++i) {
+  for (size_t i = 0; i < lgpu->render_capacity; ++i) {
     if (0 > new_vulkan_queue(vk_ctx, indices, RENDER))
       return EXIT_FAILURE;
   }
 
-  for (int i = 0; i < lgpu->presentation_capacity; ++i) {
+  for (size_t i = 0; i < lgpu->presentation_capacity; ++i) {
     if (0 > new_vulkan_queue(vk_ctx, indices, PRESENTATION))
       return EXIT_FAILURE;
   }
 
-  for (int i = 0; i < lgpu->transfer_capacity; ++i) {
+  for (size_t i = 0; i < lgpu->transfer_capacity; ++i) {
     if (0 > new_vulkan_queue(vk_ctx, indices, TRANSFER_ONLY))
       return EXIT_FAILURE;
   }
@@ -332,7 +332,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
       init_vertices_struct(&triangle_vb);
       allocate_vertices(&triangle_vb, v1_size);
 
-      for (int i = 0; i < v1_size; ++i) {
+      for (size_t i = 0; i < v1_size; ++i) {
         append_vertex(&triangle_vb, triangle_vertices[i]);
       }
 
@@ -352,7 +352,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
       init_vertices_struct(&square_vb);
       allocate_vertices(&square_vb, v2_size);
 
-      for (int i = 0; i < v2_size; ++i) {
+      for (size_t i = 0; i < v2_size; ++i) {
         append_vertex(&square_vb, square_vertices[i]);
       }
 
@@ -400,7 +400,7 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
   return 0;
 }
 
-int main() {
+int main(void) {
 
   signal(SIGINT, sig_catcher);
   signal(SIGABRT, sig_catcher);
@@ -448,8 +448,8 @@ int main() {
 
   uint8_t p_idx[] = {0};
 
-  struct timespec ts = {0};
-  struct timespec new_ts = {0};
+  // struct timespec ts = {0};
+  // struct timespec new_ts = {0};
 
   indices.command_pool = 0;
 
