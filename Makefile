@@ -20,37 +20,38 @@ CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I./$(dir))
 DEBUG_APP = $(BUILD_FOLDER)/debug$(FILE_EXT)
 LIB_OBJECTS = vk
 
-all: libs
-
-prep:
-	mkdir -p build/objects
-
-release: $(OBJECTS_RELEASE)
-debug: $(OBJECTS_DEBUG)
-test: $(DEBUG_APP)
-
-libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
-
-$(OBJECTS_RELEASE): prep
-$(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%.o: $(SOURCE_FOLDER)/%.c
-	$(CC) $(CFLAGS) $(RELEASE_FLAGS) \
-		-c $< -o $@
-
-$(OBJECTS_DEBUG): prep
-$(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%_debug.o: $(SOURCE_FOLDER)/%.c
-	$(CC) $(CFLAGS) $(DEBUG_FLAGS) \
-		-c $< -o $@
-
-$(DEBUG_APP): $(OBJECTS_DEBUG)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) \
-		$(SOURCE_FOLDER)/main.c \
-		$(BUILD_FOLDER)/objects/*_debug.o \
-		-o $@
+all: libs shaders
 
 clean:
 	rm -rf ./$(BUILD_FOLDER) || true
 
 shaders: $(SHADER_FILES)
 
-$(SHADER_FILES):
-	glslc $(basename $@) -o $@
+release: $(OBJECTS_RELEASE)
+debug: $(OBJECTS_DEBUG)
+
+# testing app
+test: $(DEBUG_APP)
+
+# individual libraries, both RELEASE and DEBUG
+libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
+
+$(OBJECTS_FOLDER):
+	mkdir -p $@
+
+$(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%.o: $(SOURCE_FOLDER)/%.c | $(OBJECTS_FOLDER)
+	$(CC) $(CFLAGS) $(RELEASE_FLAGS) \
+		-c $< -o $@
+
+$(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%_debug.o: $(SOURCE_FOLDER)/%.c | $(OBJECTS_FOLDER)
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) \
+		-c $< -o $@
+
+$(DEBUG_APP): $(OBJECTS_DEBUG)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) \
+		$(SOURCE_FOLDER)/main.c \
+		$(OBJECTS_DEBUG) \
+		-o $@
+
+$(SHADER_FILES): %.spv: %
+	glslc $< -o $@
