@@ -8,8 +8,8 @@ FILE_EXT = .out
 CFLAGS = -std=c99
 LDFLAGS = -lglfw -lvulkan
 
-RELEASE_FLAGS = -O1
-DEBUG_FLAGS = -DDEBUG -g -O0
+RELEASE_FLAGS = -O3
+DEBUG_FLAGS = -DDEBUG -g -Og
 
 BUILD_FOLDER = build
 SOURCE_FOLDER = src
@@ -17,7 +17,9 @@ INCLUDE_DIRS = include modules
 
 CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I./$(dir))
 
+RELEASE_APP = $(BUILD_FOLDER)/release$(FILE_EXT)
 DEBUG_APP = $(BUILD_FOLDER)/debug$(FILE_EXT)
+
 LIB_OBJECTS = vk
 
 all: libs shaders
@@ -31,7 +33,7 @@ release: $(OBJECTS_RELEASE)
 debug: $(OBJECTS_DEBUG)
 
 # testing app
-test: $(DEBUG_APP)
+test: $(RELEASE_APP) $(DEBUG_APP)
 
 # individual libraries, both RELEASE and DEBUG
 libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
@@ -47,10 +49,16 @@ $(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%_debug.o: $(SOURCE_FOLDER)/%.c | $(OBJECTS_
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) \
 		-c $< -o $@
 
-$(DEBUG_APP): $(OBJECTS_DEBUG)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) \
+$(RELEASE_APP): $(OBJECTS_RELEASE)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(RELEASE_FLAGS) \
 		$(SOURCE_FOLDER)/main.c \
-		$(OBJECTS_DEBUG) \
+		$< \
+		-o $@
+
+$(DEBUG_APP): $(OBJECTS_DEBUG)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(DEBUG_FLAGS) \
+		$(SOURCE_FOLDER)/main.c \
+		$< \
 		-o $@
 
 $(SHADER_FILES): %.spv: %

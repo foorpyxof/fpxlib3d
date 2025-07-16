@@ -336,11 +336,12 @@ static void destroy_lgpu(vulkan_context *vk_ctx, size_t lgpu_index) {
   fprintf(stderr, " remaining sync objects destroyed\n");
 #endif
 
-  vkDestroyDevice(lgpu->gpu, NULL);
-
+  if (VK_NULL_HANDLE != lgpu->gpu) {
+    vkDestroyDevice(lgpu->gpu, NULL);
 #ifdef DEBUG
-  fprintf(stderr, " logical device destroyed\n");
+    fprintf(stderr, " logical device destroyed\n");
 #endif
+  }
 
   memset(lgpu, 0, sizeof(*lgpu));
 }
@@ -352,7 +353,9 @@ VkResult destroy_vulkan_window(window_context *ctx) {
     destroy_lgpu(vk, i);
   }
 
-  glfwDestroyWindow(ctx->glfw_window);
+  if (NULL != ctx->glfw_window)
+    glfwDestroyWindow(ctx->glfw_window);
+
   glfwTerminate();
 
   FREE_SAFE(vk->logical_gpus);
@@ -360,8 +363,11 @@ VkResult destroy_vulkan_window(window_context *ctx) {
   vk->lg_count = 0;
   vk->lg_capacity = 0;
 
-  vkDestroySurfaceKHR(vk->vk_instance, vk->vk_surface, NULL);
-  vkDestroyInstance(vk->vk_instance, NULL);
+  if (VK_NULL_HANDLE != vk->vk_instance)
+    vkDestroySurfaceKHR(vk->vk_instance, vk->vk_surface, NULL);
+
+  if (VK_NULL_HANDLE != vk->vk_surface)
+    vkDestroyInstance(vk->vk_instance, NULL);
 
   memset(vk, 0, sizeof(*vk));
 
@@ -994,6 +1000,8 @@ int create_vulkan_swap_chain(window_context *ctx,
 
   VkSwapchainKHR old_swapchain = current_chain->swapchain;
 
+  uint32_t qf_indices[2] = {lgpu->render_qf, lgpu->presentation_qf};
+
   {
     uint32_t image_count = cap->minImageCount + 1;
     if (cap->maxImageCount > 0 && image_count > cap->maxImageCount)
@@ -1012,8 +1020,6 @@ int create_vulkan_swap_chain(window_context *ctx,
     s_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
     if (lgpu->render_qf != lgpu->presentation_qf) {
-      uint32_t qf_indices[2] = {lgpu->render_qf, lgpu->presentation_qf};
-
       s_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
       s_info.queueFamilyIndexCount = 2;
       s_info.pQueueFamilyIndices = qf_indices;

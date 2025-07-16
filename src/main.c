@@ -108,6 +108,16 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
                  struct indices *indices) {
   w_ctx->vk_context = vk_ctx;
 
+  struct spirv_file default_pipeline_vert =
+      read_spirv("shaders/default.vert.spv", VERTEX);
+
+  struct spirv_file default_pipeline_frag =
+      read_spirv("shaders/default.frag.spv", FRAGMENT);
+
+  if (INVALID == default_pipeline_vert.stage ||
+      INVALID == default_pipeline_frag.stage)
+    return EXIT_FAILURE;
+
   {
     int success = create_vulkan_window(w_ctx);
     if (VK_SUCCESS != success) {
@@ -200,12 +210,6 @@ int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
 #endif
     }
   }
-
-  struct spirv_file default_pipeline_vert =
-      read_spirv("shaders/default.vert.spv", VERTEX);
-
-  struct spirv_file default_pipeline_frag =
-      read_spirv("shaders/default.frag.spv", FRAGMENT);
 
   if (NULL == default_pipeline_vert.buffer ||
       NULL == default_pipeline_frag.buffer) {
@@ -437,6 +441,7 @@ int main(void) {
   if (0 != setup_result) {
     fprintf(stderr,
             "Errors occured while setting up Vulkan environment. Quitting.\n");
+    destroy_vulkan_window(&w_ctx);
     exit(setup_result);
   }
 
