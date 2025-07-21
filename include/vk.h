@@ -1,467 +1,561 @@
+/*
+ * Copyright (c) Erynn Scholtes
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef FPX_VK_H
 #define FPX_VK_H
 
 #include <cglm/types.h>
-#include <stdatomic.h>
-#include <vulkan/vulkan_core.h>
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include <sys/types.h>
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+
+#include "fpx3d.h"
+#include "window.h"
 
 #define TRUE 1
 #define FALSE 0
 
-struct vertex {
-  vec2 position;
-  vec3 color;
-};
+//
+//  START OF MACROS
+//
 
-struct vertex_attributes {
-  size_t binding_count;
-  VkVertexInputBindingDescription *bindings;
+#define ABS(x) ((x < 0) ? (x * -1) : (x))
+#define MAX(x, y) ((x > y) ? x : y)
+#define MIN(x, y) ((x < y) ? x : y)
+#define CLAMP(v, x, y) ((v < x) ? x : (v > y) ? y : v)
+#define CONDITIONAL(cond, then, else) ((cond) ? (then) : (else))
 
-  size_t attribute_count;
-  VkVertexInputAttributeDescription *attributes;
-};
+#define FPX3D_ON_NOT_SUCCESS(result, to_execute)                               \
+  {                                                                            \
+    if (FPX3D_SUCCESS != result) {                                             \
+      to_execute;                                                              \
+    }                                                                          \
+  }
 
-struct vertex_bundle {
-  size_t vertex_count;
-  size_t vertex_capacity;
-  struct vertex *vertices;
+#define FPX3D_RETURN_ON_ERROR(call) FPX3D_ON_NOT_SUCCESS(call, return -1)
 
-  uint16_t *indices;
-  size_t index_count;
-};
+//
+//  END OF MACROS
+//
 
-struct shape_buffer {
-  int vertex_count;
-  VkBuffer vertex_buffer;
-  VkDeviceMemory vertex_buffer_memory;
+//
+//  START OF TYPEDEFS
+//
 
-  int index_count;
-  VkBuffer index_buffer;
-  VkDeviceMemory index_buffer_memory;
-};
+typedef struct _fpx3d_vk_sc Fpx3d_Vk_Swapchain;
+typedef struct _fpx3d_vk_sc_frame Fpx3d_Vk_SwapchainFrame;
+typedef struct _fpx3d_vk_sc_req Fpx3d_Vk_SwapchainRequirements;
+typedef struct _fpx3d_vk_sc_prop Fpx3d_Vk_SwapchainProperties;
 
-struct logical_gpu_info;
+typedef enum {
+  GRAPHICS_QUEUE = 0,
+  PRESENT_QUEUE = 1,
+  TRANSFER_QUEUE = 2, // transfer ONLY! no graphics
+} Fpx3d_Vk_E_QueueType;
+typedef struct _fpx3d_vk_qf Fpx3d_Vk_QueueFamily;
+typedef struct _fpx3d_vk_qf_req Fpx3d_Vk_QueueFamilyRequirements;
 
-#define INDEX_TYPE uint8_t
-struct indices {
-  INDEX_TYPE logical_gpu;
-  INDEX_TYPE pipeline;
-  INDEX_TYPE swapchain_frame;
-  INDEX_TYPE command_pool;
-  INDEX_TYPE command_buffer;
-  INDEX_TYPE render_pass;
-  INDEX_TYPE render_queue;
-  INDEX_TYPE present_queue;
-  INDEX_TYPE transfer_queue;
-};
-#undef INDEX_TYPE
+typedef struct _fpx3d_vk_vertex Fpx3d_Vk_Vertex;
+typedef struct _fpx3d_vk_vertex_bundle Fpx3d_Vk_VertexBundle;
+typedef struct _fpx3d_vk_vertex_binding Fpx3d_Vk_VertexBinding;
+typedef struct _fpx3d_vk_vertex_attr Fpx3d_Vk_VertexAttribute;
 
-struct swapchain_frame {
+typedef struct _fpx3d_vk_shapebuffer Fpx3d_Vk_ShapeBuffer;
+
+typedef enum {
+  GRAPHICS_PIPELINE = 0,
+  COMPUTE_PIPELINE = 1,
+} Fpx3d_Vk_E_PipelineType;
+typedef struct _fpx3d_vk_pipeline Fpx3d_Vk_Pipeline;
+
+typedef enum {
+  SHADER_STAGE_INVALID = 0,
+  SHADER_STAGE_VERTEX = 2,
+  SHADER_STAGE_TESSELATION_CONTROL = 3,
+  SHADER_STAGE_TESSELATION_EVALUATION = 4,
+  SHADER_STAGE_GEOMETRY = 5,
+  SHADER_STAGE_FRAGMENT = 7,
+} Fpx3d_Vk_E_ShaderStage;
+typedef struct _fpx3d_vk_spirv Fpx3d_Vk_SpirvFile;
+typedef struct _fpx3d_vk_shader_modules Fpx3d_Vk_ShaderModuleSet;
+
+typedef enum {
+  GRAPHICS_POOL = 0,
+  TRANSFER_POOL = 1,
+} Fpx3d_Vk_E_CommandPoolType;
+typedef struct _fpx3d_vk_command_pool Fpx3d_Vk_CommandPool;
+
+typedef struct _fpx3d_vk_lgpu Fpx3d_Vk_LogicalGpu;
+
+typedef struct _fpx3d_vk_context Fpx3d_Vk_Context;
+
+//
+//  END OF TYPEDEFS
+//
+
+struct _fpx3d_vk_sc_frame {
   VkImage image;
   VkImageView view;
   VkFramebuffer framebuffer;
 
-  VkSemaphore write_available;
-  VkSemaphore render_finished;
+  VkSemaphore writeAvailable;
+  VkSemaphore renderFinished;
+
+  VkFence idleFence;
 };
 
-struct active_swapchain {
+struct _fpx3d_vk_sc_prop {
+  VkSurfaceCapabilitiesKHR surfaceCapabilities;
+
+  bool surfaceFormatValid;
+  bool presentModeValid;
+
+  VkSurfaceFormatKHR surfaceFormat;
+  VkPresentModeKHR presentMode;
+};
+
+struct _fpx3d_vk_sc {
   VkSwapchainKHR swapchain;
-  VkExtent2D swapchain_extent;
+  VkExtent2D swapchainExtent;
 
-  VkSemaphore aquire_semaphore;
-  VkFence in_flight_fence;
+  Fpx3d_Vk_SwapchainProperties properties;
 
-  VkFormat image_format;
-  struct swapchain_frame *frames;
-  size_t frame_count;
+  VkSemaphore acquireSemaphore;
+
+  VkRenderPass *renderPassReference;
+
+  VkFormat imageFormat;
+  Fpx3d_Vk_SwapchainFrame *frames;
+  size_t frameCount;
+
+  Fpx3d_Vk_Swapchain *nextInList;
 };
 
-struct swapchain_requirements {
-  VkSurfaceCapabilitiesKHR surface_capabilities;
+// TODO: rethink(?)
+struct _fpx3d_vk_sc_req {
+  VkSurfaceCapabilitiesKHR surfaceCapabilities;
 
-  VkSurfaceFormatKHR *surface_formats;
-  size_t surface_formats_count;
+  VkSurfaceFormatKHR *surfaceFormats;
+  size_t surfaceFormatsCount;
 
-  VkPresentModeKHR *present_modes;
-  size_t present_modes_count;
+  VkPresentModeKHR *presentModes;
+  size_t presentModesCount;
 };
 
-typedef struct {
-  VkPhysicalDevice physical_gpu;
-  struct logical_gpu_info *logical_gpus;
-  size_t lg_count, lg_capacity;
+Fpx3d_E_Result
+fpx3d_vk_set_required_surfaceformats(Fpx3d_Vk_SwapchainRequirements *,
+                                     VkSurfaceFormatKHR *formats, size_t count);
 
-  const char **lgpu_extensions;
-  size_t lgpu_extension_count;
+Fpx3d_E_Result
+fpx3d_vk_set_required_presentmodes(Fpx3d_Vk_SwapchainRequirements *,
+                                   VkPresentModeKHR *modes, size_t count);
 
-  VkInstance vk_instance;
-  VkSurfaceKHR vk_surface;
-
-  struct swapchain_requirements swapchain_requirements;
-
-  uint8_t teardown;
-
-  VkApplicationInfo app_info;
-
-  const char **validation_layers;
-  size_t validation_layers_count;
-} vulkan_context;
-
-typedef struct {
-  GLFWwindow *glfw_window;
-  const char *window_title;
-  uint16_t window_dimensions[2];
-
-  uint8_t resized;
-
-  vulkan_context *vk_context;
-} window_context;
-
-struct queue_family_info {
-  int64_t index;
-  VkQueueFamilyProperties family;
-  uint8_t is_valid;
+struct _fpx3d_vk_qf {
+  ssize_t index;
+  VkQueueFamilyProperties properties;
+  bool isValid;
 };
 
-struct queue_family_requirements {
-  union req_union {
+struct _fpx3d_vk_qf_req {
+  union {
     struct {
-      uint32_t qf_flags;
-    } render;
+      uint32_t requiredFlags;
+    } graphics;
 
     struct {
       VkSurfaceKHR surface;
       VkPhysicalDevice gpu;
     } present;
-  } reqs;
+  };
 
-  size_t minimum_queues;
+  size_t minimumQueues;
 
   // supports up to 64 qf indices. should be fine
-  uint64_t index_blacklist_bits;
+  uint64_t indexBlacklistBits;
 
-  enum queue_family_type {
-    RENDER = 0,
-    PRESENTATION = 1,
-    TRANSFER_ONLY = 2,
-  } type;
+  Fpx3d_Vk_E_QueueType type;
 };
 
-struct queue_info {
-  VkQueue queue;
-  VkQueueFlags queue_flags;
+// index <= 63
+Fpx3d_E_Result
+fpx3d_vk_blacklist_queuefamily_index(Fpx3d_Vk_QueueFamilyRequirements *,
+                                     size_t index);
+
+struct _fpx3d_vk_vertex {
+  vec2 position;
+  vec3 color;
 };
 
-struct pipeline {
+Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *, vec2 pos);
+Fpx3d_E_Result fpx3d_set_vertex_color(Fpx3d_Vk_Vertex *, vec3 color);
+
+struct _fpx3d_vk_vertex_bundle {
+  // size of the Vertex data in bytes (for a single vertex).
+  // If you use a struct, just do sizeof([your struct])
+  size_t vertexDataSize;
+
+  void *vertices;
+  size_t vertexCount;
+  size_t vertexCapacity;
+
+  uint32_t *indices;
+  size_t indexCount; // if 0, use vertices as is
+};
+
+// will *only* zero-initialize if this is an initial allocation,
+// not when reallocating using this function
+Fpx3d_E_Result fpx3d_vk_allocate_vertices(Fpx3d_Vk_VertexBundle *,
+                                          size_t amount,
+                                          size_t single_vertex_size);
+Fpx3d_E_Result fpx3d_vk_append_vertices(Fpx3d_Vk_VertexBundle *,
+                                        Fpx3d_Vk_Vertex *vertices,
+                                        size_t amount);
+Fpx3d_E_Result fpx3d_vk_set_indices(Fpx3d_Vk_VertexBundle *, uint32_t *indices,
+                                    size_t amount);
+
+// also frees indices, if these were allocated
+Fpx3d_E_Result fpx3d_vk_free_vertices(Fpx3d_Vk_VertexBundle *);
+
+// these will be used in pipeline creation
+struct _fpx3d_vk_vertex_attr {
+  enum {
+    FPX3D_VK_FORMAT_INVALID = 0,
+
+    VEC2_16BIT_SFLOAT = 1,
+    VEC3_16BIT_SFLOAT = 2,
+    VEC4_16BIT_SFLOAT = 3,
+
+    VEC2_32BIT_SFLOAT = 4,
+    VEC3_32BIT_SFLOAT = 5,
+    VEC4_32BIT_SFLOAT = 6,
+
+    VEC2_64BIT_SFLOAT = 7,
+    VEC3_64BIT_SFLOAT = 8,
+    VEC4_64BIT_SFLOAT = 9,
+
+    FPX3D_VK_FORMAT_MAXVALUE,
+  } format;
+
+  size_t dataOffsetBytes;
+};
+
+struct _fpx3d_vk_vertex_binding {
+  Fpx3d_Vk_VertexAttribute *attributes;
+  size_t attributeCount;
+
+  size_t sizePerVertex;
+};
+
+struct fpx3d_vulkan_buffer {
+  size_t objectCount;
+  size_t stride;
+
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+
+  void *mapped_memory;
+
+  VkSharingMode sharingMode;
+
+  bool isValid;
+};
+
+struct _fpx3d_vk_shapebuffer {
+  struct fpx3d_vulkan_buffer vertexBuffer;
+
+  // if `isValid` bool is set to `false`, we assume we want to use the vertices
+  // as-is, instead of ordering them using an index buffer
+  struct fpx3d_vulkan_buffer indexBuffer;
+}; // added to the Pipeline struct after that Pipeline has
+   // already been created
+
+Fpx3d_E_Result fpx3d_vk_create_shapebuffer(Fpx3d_Vk_Context *,
+                                           Fpx3d_Vk_LogicalGpu *,
+                                           Fpx3d_Vk_VertexBundle *,
+                                           Fpx3d_Vk_ShapeBuffer *output);
+
+Fpx3d_E_Result fpx3d_vk_free_shapebuffer(Fpx3d_Vk_LogicalGpu *,
+                                         Fpx3d_Vk_ShapeBuffer *);
+
+Fpx3d_E_Result fpx3d_vk_add_shapes_to_pipeline(Fpx3d_Vk_ShapeBuffer *,
+                                               size_t count,
+                                               Fpx3d_Vk_Pipeline *pipeline);
+
+struct _fpx3d_vk_pipeline {
   VkPipeline pipeline;
   VkPipelineLayout layout;
 
-  struct shape_buffer *shapes;
-  size_t shape_count;
+  Fpx3d_Vk_E_PipelineType type;
+
+  union {
+    struct {
+      Fpx3d_Vk_ShapeBuffer *shapes;
+      size_t shapeCount;
+    } graphics;
+  };
 };
 
-struct logical_gpu_info {
-  VkDevice gpu;
-  VkPhysicalDeviceFeatures features;
-
-  struct active_swapchain current_swapchain;
-
-  struct command_pool *command_pools;
-  size_t command_pool_capacity;
-
-  struct pipeline *pipelines;
-  size_t pipeline_capacity;
-
-  VkRenderPass *render_passes;
-  size_t render_pass_capacity;
-
-  VkQueue *render_queues;
-  size_t render_count;
-  size_t render_capacity;
-  int render_qf;
-
-  VkQueue *presentation_queues;
-  size_t presentation_count;
-  size_t presentation_capacity;
-  int presentation_qf;
-
-  VkQueue *transfer_queues;
-  size_t transfer_count;
-  size_t transfer_capacity;
-  int transfer_qf;
-
-  ssize_t render_transfer_overlap;
-};
-
-struct swapchain_details {
-  uint8_t swapchains_available;
-
-  VkSurfaceCapabilitiesKHR surface_capabilities;
-
-  uint8_t surface_format_valid;
-  uint8_t present_mode_valid;
-
-  VkSurfaceFormatKHR surface_format;
-  VkPresentModeKHR present_mode;
-};
-
-enum shader_stage {
-  INVALID = 0,
-  // INPUT = 1,
-  VERTEX = 2,
-  TESSELATION_CONTROL = 3,
-  TESSELATION_EVALUATION = 4,
-  GEOMETRY = 5,
-  // RASTERIZATION = 6,
-  FRAGMENT = 7,
-  // BLENDING = 8,
-};
-
-struct spirv_file {
+struct _fpx3d_vk_spirv {
   uint8_t *buffer;
   size_t filesize;
 
-  const char *version;
+  // const char *version;
 
-  enum shader_stage stage;
+  Fpx3d_Vk_E_ShaderStage stage;
 
-  enum source_language {
-    UNKNOWN = 0,
-    ESSL = 1,
-    GLSL = 2,
-    OPENCL_C = 3,
-    OPENCL_CPP = 4,
-    HLSL = 5,
-    CPP_FOR_OPENCL = 6,
-    SYCL = 7,
-    HERO_C = 8,
-    NZSL = 9,
-    WGSL = 10,
-    SLANG = 11,
-    ZIG = 12,
-    RUST = 13
-  } source_language;
+  // enum {
+  //   UNKNOWN = 0,
+  //   ESSL = 1,
+  //   GLSL = 2,
+  //   OPENCL_C = 3,
+  //   OPENCL_CPP = 4,
+  //   HLSL = 5,
+  //   CPP_FOR_OPENCL = 6,
+  //   SYCL = 7,
+  //   HERO_C = 8,
+  //   NZSL = 9,
+  //   WGSL = 10,
+  //   SLANG = 11,
+  //   ZIG = 12,
+  //   RUST = 13
+  // } source_language;
 };
 
-struct shader_set {
+Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
+                                            Fpx3d_Vk_E_ShaderStage stage);
+Fpx3d_E_Result fpx3d_vk_destroy_spirv_file(Fpx3d_Vk_SpirvFile *);
+
+struct _fpx3d_vk_shader_modules {
   // VkShaderModule input;
   VkShaderModule vertex;
-  VkShaderModule tesselation_control;
-  VkShaderModule tesselation_evaluation;
+  VkShaderModule tesselationControl;
+  VkShaderModule tesselationEvaluation;
   VkShaderModule geometry;
   // VkShaderModule rasterization;
   VkShaderModule fragment;
   // VkShaderModule blending;
 };
 
-struct command_pool {
-  enum command_pool_type {
-    RENDER_POOL = 0,
-    TRANSFER_POOL = 1,
-  } type;
+Fpx3d_E_Result fpx3d_vk_load_shadermodules(Fpx3d_Vk_SpirvFile *spirv_files,
+                                           size_t spirv_count,
+                                           Fpx3d_Vk_LogicalGpu *,
+                                           Fpx3d_Vk_ShaderModuleSet *output);
 
+Fpx3d_E_Result fpx3d_vk_destroy_shadermodules(Fpx3d_Vk_ShaderModuleSet *,
+                                              Fpx3d_Vk_LogicalGpu *);
+
+struct _fpx3d_vk_command_pool {
   VkCommandPool pool;
 
   VkCommandBuffer *buffers;
-  size_t buffer_count;
+  size_t bufferCount;
+
+  Fpx3d_Vk_E_CommandPoolType type;
 };
 
-// returns 0 on success
-VkResult init_vulkan_context(vulkan_context *);
+struct fpx3d_vulkan_queues {
+  VkQueue *queues;
+  size_t count;
+  size_t capacity;
 
-uint8_t validation_layers_supported(const char **layers, size_t layer_count);
-uint8_t device_extensions_supported(VkPhysicalDevice, const char **extensions,
-                                    size_t extension_count);
+  int queueFamilyIndex;
+};
 
-// returns either a VkResult or a separate error code.
-// if the error code is a valid VkResult, assume so.
-// otherwise it is separate
-VkResult create_vulkan_window(window_context *);
+struct _fpx3d_vk_lgpu {
+  VkDevice handle;
+  VkPhysicalDeviceFeatures features;
 
-VkResult destroy_vulkan_window(window_context *);
+  Fpx3d_Vk_Swapchain currentSwapchain;
 
-// puts the most suitable Vulkan GPU into the passed vulkan_context struct.
-// the scoring function must return a score that is higher for a more suitable
-// GPU.
-// return 0: success
-// return -1: no vulkan GPU's. return -2: memory allocation failed.
-int choose_vulkan_gpu(vulkan_context *,
-                      int (*scoring_function)(vulkan_context *,
-                                              VkPhysicalDevice));
+  Fpx3d_Vk_Swapchain *oldSwapchainsList;
+  Fpx3d_Vk_Swapchain *newestOldSwapchain;
 
-struct queue_family_info
-vulkan_queue_family(vulkan_context *, struct queue_family_requirements *);
+  Fpx3d_Vk_CommandPool *commandPools;
+  size_t commandPoolCapacity;
 
-// return -1: logical gpu count in vulkan_context
-//  is greater than or equal to  logical gpu capacity
-// return -2: error while querying queue families
-// return -3: error while selecting a queue family
-// return -4: error while allocating memory
-// return -5: error while creating the logical gpu
-int new_logical_vulkan_gpu(vulkan_context *, float priority,
-                           VkPhysicalDeviceFeatures, size_t render_queues,
-                           size_t presentation_queues, size_t transfer_queues);
+  Fpx3d_Vk_Pipeline *pipelines;
+  size_t pipelineCapacity;
 
+  VkRenderPass *renderPasses;
+  size_t renderPassCapacity;
+
+  struct fpx3d_vulkan_queues graphicsQueues;
+  struct fpx3d_vulkan_queues presentQueues;
+  struct fpx3d_vulkan_queues transferQueues;
+
+  ssize_t graphicsTransferOverlap;
+
+  // don't alter the in-flight metadata in your own usage of this library,
+  // unless you understand how to use it to your advantage. Check the
+  // implementation in `vk.c` for details on how many in-flight fences and
+  // command-buffers are already allocated
+  //
+  // also:
+  // https://vulkan-tutorial.com/Drawing_a_triangle/Drawing/Frames_in_flight
+  Fpx3d_Vk_CommandPool inFlightCommandPool;
+  VkFence *inFlightFences;
+
+  uint16_t frameCounter;
+};
+
+struct _fpx3d_vk_context {
+  Fpx3d_Wnd_Context *windowContext;
+
+  // this pointer will be passed into callbacks
+  void *customPointer;
+
+  VkPhysicalDevice physicalGpu;
+
+  Fpx3d_Vk_LogicalGpu *logicalGpus;
+  size_t logicalGpuCapacity;
+
+  const char **lgpuExtensions;
+  size_t lgpuExtensionCount;
+
+  const char **validationLayers;
+  size_t validationLayersCount;
+
+  VkInstance vkInstance;
+  VkSurfaceKHR vkSurface;
+
+  VkApplicationInfo appInfo;
+};
+
+Fpx3d_E_Result fpx3d_vk_set_custom_pointer(Fpx3d_Vk_Context *, void *);
+void *fpx3d_vk_get_custom_pointer(Fpx3d_Vk_Context *);
+
+Fpx3d_Wnd_Context *fpx3d_vk_get_windowcontext(Fpx3d_Vk_Context *);
+
+bool fpx3d_vk_validation_layers_supported(const char **layers,
+                                          size_t layer_count);
+bool fpx3d_vk_device_extensions_supported(VkPhysicalDevice,
+                                          const char **extensions,
+                                          size_t extension_count);
+
+Fpx3d_Vk_SwapchainProperties
+fpx3d_vk_get_swapchain_support(Fpx3d_Vk_Context *ctx, VkPhysicalDevice dev,
+                               Fpx3d_Vk_SwapchainRequirements reqs);
+
+Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *, Fpx3d_Wnd_Context *);
+Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *);
+Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *,
+                                       void (*destruction_callback)(void *));
+
+Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *,
+                                   int (*scoring_function)(Fpx3d_Vk_Context *,
+                                                           VkPhysicalDevice));
+
+// TODO: make some functions to aid in finding what GPU is best.
+// e.g., functions to check if certain features exist on a VkPhysicalDevice
 /*
- * INDICES READ:
- * - logical_gpu
+ * Helper functions for inside the `scoring_function` for picking a GPU
  */
-int new_vulkan_queue(vulkan_context *, const struct indices *,
-                     enum queue_family_type);
-
-void save_swapchain_requirements(vulkan_context *,
-                                 const struct swapchain_requirements *);
-
-struct swapchain_details swapchain_compatibility(vulkan_context *,
-                                                 VkPhysicalDevice);
-
+bool fpx3d_vk_are_swapchains_supported(VkPhysicalDevice);
 /*
- * INDICES READ:
- * - logical_gpu
+ * End of helper functions.
  */
-int create_vulkan_swap_chain(window_context *, const struct swapchain_details *,
-                             const struct indices *);
 
-int refresh_vulkan_swap_chain(window_context *,
-                              const struct swapchain_details *,
-                              const struct indices *);
+Fpx3d_E_Result fpx3d_vk_allocate_logicalgpus(Fpx3d_Vk_Context *, size_t amount);
+Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *, size_t index,
+                                             VkPhysicalDeviceFeatures,
+                                             size_t graphics_queues,
+                                             size_t present_queues,
+                                             size_t transfer_queues);
+Fpx3d_Vk_LogicalGpu *fpx3d_vk_get_logicalgpu_at(Fpx3d_Vk_Context *,
+                                                size_t index);
+Fpx3d_E_Result fpx3d_vk_destroy_logicalgpu_at(Fpx3d_Vk_Context *, size_t index);
 
-struct spirv_file read_spirv(const char *filename, enum shader_stage);
+Fpx3d_E_Result fpx3d_vk_create_queues(Fpx3d_Vk_LogicalGpu *,
+                                      Fpx3d_Vk_E_QueueType, size_t count);
+Fpx3d_E_Result fpx3d_vk_create_all_available_queues(Fpx3d_Vk_LogicalGpu *);
+VkQueue *fpx3d_vk_get_queue_at(Fpx3d_Vk_LogicalGpu *, size_t index,
+                               Fpx3d_Vk_E_QueueType);
+// unneccesary? queues are automagically destroyed at lgpu-cleanup time
+// Fpx3d_E_Result fpx3d_vk_destroy_queue_at(Fpx3d_Vk_LogicalGpu *,
+//                                          Fpx3d_Vk_E_QueueType type,
+//                                          size_t index);
 
-/*
- * INDICES READ:
- * - logical_gpu
- */
-int fill_shader_module(vulkan_context *, const struct indices *,
-                       const struct spirv_file, struct shader_set *);
+Fpx3d_E_Result fpx3d_vk_allocate_renderpasses(Fpx3d_Vk_LogicalGpu *,
+                                              size_t count);
+Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *,
+                                             size_t index);
+VkRenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *, size_t index);
+Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *,
+                                              size_t index);
 
-/*
- * INDICES READ:
- * - logical_gpu
- */
-VkRenderPass create_render_pass(vulkan_context *, const struct indices *);
+Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *,
+                                         Fpx3d_Vk_LogicalGpu *,
+                                         Fpx3d_Vk_SwapchainProperties);
+Fpx3d_Vk_Swapchain *fpx3d_vk_get_current_swapchain(Fpx3d_Vk_LogicalGpu *);
+Fpx3d_E_Result fpx3d_vk_destroy_current_swapchain(Fpx3d_Vk_LogicalGpu *);
+Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *,
+                                                  Fpx3d_Vk_LogicalGpu *);
 
-/*
- * INDICES READ:
- * - logical_gpu
- */
-int allocate_render_passes(vulkan_context *, const struct indices *,
-                           size_t amount);
+// TODO: also create() and destroy()? only if necessary tho
+Fpx3d_Vk_SwapchainFrame *fpx3d_vk_get_swapchain_frame_at(Fpx3d_Vk_Swapchain *,
+                                                         size_t index);
+Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *,
+                                                   size_t index,
+                                                   VkQueue *present_queue);
 
-/*
- * INDICES READ:
- * - logical_gpu
- * - render_pass
- */
-int add_render_pass(vulkan_context *, const struct indices *, VkRenderPass);
+// TODO: also create() and destroy()? only if necessary tho
+Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *,
+                                            Fpx3d_Vk_LogicalGpu *,
+                                            VkRenderPass *render_pass);
 
-int init_vertices_struct(struct vertex_bundle *);
+VkPipelineLayout fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_LogicalGpu *);
+Fpx3d_E_Result fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_LogicalGpu *,
+                                                VkPipelineLayout);
 
-int allocate_vertices(struct vertex_bundle *, size_t);
+Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *,
+                                           size_t amount);
 
-void free_vertices(struct vertex_bundle *);
+Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
+    Fpx3d_Vk_LogicalGpu *, size_t index, VkPipelineLayout p_layout,
+    VkRenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
+    Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count);
+Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(Fpx3d_Vk_LogicalGpu *,
+                                            size_t index);
+Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *,
+                                            size_t index);
 
-int append_vertex(struct vertex_bundle *, struct vertex);
+Fpx3d_E_Result fpx3d_vk_allocate_commandpools(Fpx3d_Vk_LogicalGpu *,
+                                              size_t amount);
+Fpx3d_E_Result fpx3d_create_commandpool_at(Fpx3d_Vk_LogicalGpu *, size_t index,
+                                           Fpx3d_Vk_E_CommandPoolType type);
+Fpx3d_Vk_CommandPool *fpx3d_vk_get_commandpool_at(Fpx3d_Vk_LogicalGpu *,
+                                                  size_t index);
+Fpx3d_E_Result fpx3d_vk_destroy_commandpool_at(Fpx3d_Vk_LogicalGpu *,
+                                               size_t index);
 
-void shape_buffer_init(struct shape_buffer *);
+Fpx3d_E_Result fpx3d_vk_allocate_commandbuffers_at_pool(Fpx3d_Vk_LogicalGpu *,
+                                                        size_t cmd_pool_index,
+                                                        size_t amount);
+Fpx3d_E_Result fpx3d_vk_create_commandbuffer_at(Fpx3d_Vk_CommandPool *,
+                                                size_t index,
+                                                Fpx3d_Vk_LogicalGpu *);
+VkCommandBuffer *fpx3d_vk_get_commandbuffer_at(Fpx3d_Vk_CommandPool *,
+                                               size_t index);
+// TODO: research render pass relationship to command buffer. is it always
+// 1:1? so can i store them in the same struct?
+Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *,
+                                                Fpx3d_Vk_Pipeline *pipeline,
+                                                Fpx3d_Vk_Swapchain *swapchain,
+                                                size_t frame_index,
+                                                VkRenderPass *render_pass);
+Fpx3d_E_Result fpx3d_vk_submit_commandbuffer_at(VkCommandBuffer *,
+                                                Fpx3d_Vk_LogicalGpu *,
+                                                size_t frame_index,
+                                                VkQueue *graphics_queue);
 
-int shape_buffer_from_vertices(vulkan_context *, struct indices *,
-                               struct shape_buffer *output_shape,
-                               struct vertex_bundle *input_bundle);
-
-void free_shape_buffer(vulkan_context *, struct indices *,
-                       struct shape_buffer *shape);
-
-/*
- * INDICES READ:
- * - logical_gpu
- */
-// will realloc() if already has capacity > 0
-int allocate_pipelines(vulkan_context *, const struct indices *, size_t amount);
-
-/*
- * INDICES READ:
- * - logical_gpu
- * - pipeline
- */
-int create_graphics_pipeline(vulkan_context *, const struct indices *,
-                             const struct spirv_file *spirvs,
-                             size_t spirv_count, struct shader_set *set,
-                             struct vertex_attributes *attr,
-                             struct shape_buffer *shapes, size_t shape_count);
-
-/*
- * INDICES READ:
- * - logical_gpu
- * - render_pass
- */
-int create_framebuffers(vulkan_context *, const struct indices *);
-
-/*
- * INDICES READ:
- * - logical_gpu
- */
-int allocate_command_pools(vulkan_context *, const struct indices *,
-                           size_t amount);
-
-/*
- * INDICES READ:
- * - logical_gpu
- */
-int create_command_pool(vulkan_context *, const struct indices *,
-                        enum command_pool_type);
-
-/*
- * INDICES READ:
- * - logical_gpu
- */
-int create_command_buffers(vulkan_context *, const struct indices *,
-                           size_t amount);
-
-/*
- * INDICES READ:
- * - logical_gpu
- * - command_buffer
- * - render_pass
- * - swapchain_frame
- */
-int record_command_buffer(vulkan_context *, const struct indices *,
-                          size_t pipeline_index);
-
-/*
- * INDICES READ:
- * - logical_gpu
- * - command_buffer
- * - swapchain_frame
- * - render_queue
- */
-int submit_command_buffer(vulkan_context *, const struct indices *);
-
-/*
- * INDICES READ:
- * - logical_gpu
- */
-int present_swap_frame(vulkan_context *, const struct indices *);
-
-/*
- * INDICES READ:
- * - logical_gpu
- * - command_buffer
- * - render_pass
- * - render_queue
- * - present_queue
- */
-// this function calls:
-//  record_command_buffer()
-//  submit_command_buffer()
-//  present_swap_frame()
-// to draw to the screen
-void draw_frame(window_context *, struct indices *, uint8_t *pipeline_indices,
-                size_t pipeline_count);
+// draw_frame handles the aquiring of a swapchain-frame, recording and
+// submitting of a command buffer, and presenting the frame
+Fpx3d_E_Result fpx3d_vk_draw_frame(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *,
+                                   Fpx3d_Vk_Pipeline *pipelines,
+                                   size_t pipeline_count,
+                                   VkQueue *graphics_queue,
+                                   VkQueue *present_queue);
 
 #endif

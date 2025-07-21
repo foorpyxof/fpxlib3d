@@ -5,11 +5,11 @@ include make/*.mk
 CC = clang
 FILE_EXT = .out
 
-CFLAGS = -std=c99
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wno-variadic-macro-arguments-omitted
 LDFLAGS = -lglfw -lvulkan
 
 RELEASE_FLAGS = -O3
-DEBUG_FLAGS = -DDEBUG -g -Og
+DEBUG_FLAGS = -DDEBUG -g -O0
 
 BUILD_FOLDER = build
 SOURCE_FOLDER = src
@@ -19,6 +19,8 @@ CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I./$(dir))
 
 RELEASE_APP = $(BUILD_FOLDER)/release$(FILE_EXT)
 DEBUG_APP = $(BUILD_FOLDER)/debug$(FILE_EXT)
+
+MAIN = $(SOURCE_FOLDER)/main.c
 
 LIB_OBJECTS = vk
 
@@ -33,7 +35,7 @@ release: $(OBJECTS_RELEASE)
 debug: $(OBJECTS_DEBUG)
 
 # testing app
-test: $(RELEASE_APP) $(DEBUG_APP)
+test: $(RELEASE_APP) $(DEBUG_APP) $(SHADER_FILES)
 
 # individual libraries, both RELEASE and DEBUG
 libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
@@ -49,16 +51,14 @@ $(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%_debug.o: $(SOURCE_FOLDER)/%.c | $(OBJECTS_
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) \
 		-c $< -o $@
 
-$(RELEASE_APP): $(OBJECTS_RELEASE)
+$(RELEASE_APP): $(OBJECTS_RELEASE) $(MAIN)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(RELEASE_FLAGS) \
-		$(SOURCE_FOLDER)/main.c \
-		$< \
+		$^ \
 		-o $@
 
-$(DEBUG_APP): $(OBJECTS_DEBUG)
+$(DEBUG_APP): $(OBJECTS_DEBUG) $(MAIN)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(DEBUG_FLAGS) \
-		$(SOURCE_FOLDER)/main.c \
-		$< \
+		$^ \
 		-o $@
 
 $(SHADER_FILES): %.spv: %

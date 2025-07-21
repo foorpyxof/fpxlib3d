@@ -1,18 +1,36 @@
+/*
+ * Copyright (c) Erynn Scholtes
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "debug.h"
+#include "fpx3d.h"
 #include "vk.h"
+#include "window.h"
 
 #include <GLFW/glfw3.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <unistd.h>
 #include <vulkan/vulkan_core.h>
 
 #define LOGICAL_GPU_COUNT 1
 
-window_context w_ctx = {.glfw_window = NULL,
-                        .window_dimensions = {690, 690},
-                        .window_title = "YAY VULKAN RENDERER"};
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof(*array))
+
+// clang-format off
+#define PRINT_FAILURE(res)                                                     \
+  if (FPX3D_SUCCESS != res) { FPX3D_ERROR("A FUNCTION FAILED!"); }
+// clang-format on
+
+void dest_callback(void *);
+
+Fpx3d_Vk_Context vk_ctx = {0};
+
+const char *val_layers[] = {"VK_LAYER_KHRONOS_validation"};
+const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 struct shape_buffer *shapes = NULL;
 
@@ -34,8 +52,8 @@ static void sig_catcher(int signo) {
     return;
   }
 
-  fprintf(stderr, "%ssignal received. Exiting\n", type);
-  destroy_vulkan_window(&w_ctx);
+  fprintf(stderr, "\n%ssignal received. Exiting\n", type);
+  fpx3d_vk_destroy_window(&vk_ctx, dest_callback);
 
   exit(128 + signo);
 }
@@ -46,13 +64,9 @@ VkSurfaceFormatKHR formats[] = {
 
 VkPresentModeKHR modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 
-const struct swapchain_requirements sc_reqs = {
-    .surface_formats = formats,
-    .surface_formats_count = (sizeof(formats) / sizeof(*formats)),
-    .present_modes = modes,
-    .present_modes_count = (sizeof(modes) / sizeof(*modes))};
+Fpx3d_Vk_SwapchainRequirements sc_reqs = {0};
 
-int gpu_suitability(vulkan_context *ctx, VkPhysicalDevice to_score) {
+int gpu_suitability(Fpx3d_Vk_Context *ctx, VkPhysicalDevice to_score) {
   uint8_t score = 200;
   float multiplier;
 
@@ -89,12 +103,10 @@ int gpu_suitability(vulkan_context *ctx, VkPhysicalDevice to_score) {
   }
 
   {
-    struct swapchain_details sc_details = {0};
+    Fpx3d_Vk_SwapchainProperties props =
+        fpx3d_vk_get_swapchain_support(ctx, to_score, sc_reqs);
 
-    sc_details = swapchain_compatibility(ctx, to_score);
-
-    if (!(sc_details.swapchains_available && sc_details.surface_format_valid &&
-          sc_details.present_mode_valid)) {
+    if (!(props.surfaceFormatValid && props.presentModeValid)) {
       score = 0;
       goto gpu_suitability_ret;
     }
@@ -104,304 +116,39 @@ gpu_suitability_ret:
   return score * multiplier;
 }
 
-int setup_vulkan(window_context *w_ctx, vulkan_context *vk_ctx,
-                 struct indices *indices) {
-  w_ctx->vk_context = vk_ctx;
+Fpx3d_Vk_ShaderModuleSet modules = {0};
 
-  struct spirv_file default_pipeline_vert =
-      read_spirv("shaders/default.vert.spv", VERTEX);
+Fpx3d_Vk_LogicalGpu *lgpu = NULL;
 
-  struct spirv_file default_pipeline_frag =
-      read_spirv("shaders/default.frag.spv", FRAGMENT);
+Fpx3d_Vk_ShapeBuffer triangle_shape = {0};
+Fpx3d_Vk_ShapeBuffer square_shape = {0};
 
-  if (INVALID == default_pipeline_vert.stage ||
-      INVALID == default_pipeline_frag.stage)
-    return EXIT_FAILURE;
+VkQueue *graphics_queue = NULL;
+VkQueue *present_queue = NULL;
+VkQueue *transfer_queue = NULL;
 
-  {
-    int success = create_vulkan_window(w_ctx);
-    if (VK_SUCCESS != success) {
-      fprintf(stderr,
-              "Error creating Vulkan instance, window or surface. Code: %d\n",
-              success);
-      return success;
-    }
+VkRenderPass *render_pass = NULL;
 
-#ifdef DEBUG
-    fprintf(stderr,
-            "Successfully created Vulkan instance, window and surface\n");
-#endif
-  }
+VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+Fpx3d_Vk_Pipeline *pipeline = NULL;
 
-  save_swapchain_requirements(vk_ctx, &sc_reqs);
+Fpx3d_Vk_CommandPool *transfer_pool = NULL;
+VkCommandBuffer *transfer_buffer = NULL;
 
-  {
-    int success = choose_vulkan_gpu(vk_ctx, gpu_suitability);
+Fpx3d_Vk_SwapchainProperties swapchain_properties = {0};
 
-    if (0 != success) {
-      // failed
-      fprintf(stderr, "Could not find a suitable GPU to use.\n");
-      return success;
-    } else {
-#ifdef DEBUG
-      fprintf(stderr, "Successfully picked a GPU to use\n");
-#endif
-      VkPhysicalDeviceProperties prop;
-      vkGetPhysicalDeviceProperties(vk_ctx->physical_gpu, &prop);
-      fprintf(stderr, "Using Vulkan GPU \"%s\"\n", prop.deviceName);
-    }
-  }
+void dest_callback(void *custom_ptr) {
+  fprintf(stderr, "%s\n", (const char *)custom_ptr);
 
-  int lgpu_index = -1;
+  if (VK_NULL_HANDLE == lgpu->handle)
+    return;
 
-  {
-    vk_ctx->logical_gpus = (struct logical_gpu_info *)calloc(
-        LOGICAL_GPU_COUNT, sizeof(struct logical_gpu_info));
-    if (NULL == vk_ctx->logical_gpus) {
-      perror("calloc()");
-      return EXIT_FAILURE;
-    }
-    vk_ctx->lg_capacity = LOGICAL_GPU_COUNT;
+  vkDeviceWaitIdle(lgpu->handle);
 
-    VkPhysicalDeviceFeatures features = {0};
-    lgpu_index = new_logical_vulkan_gpu(vk_ctx, 1.0f, features, 1, 1, 1);
-
-    if (0 > lgpu_index) {
-      // failure
-      fprintf(stderr, "Error while creating logical GPU. Error code: %d\n",
-              lgpu_index);
-      return lgpu_index;
-    }
-
-#ifdef DEBUG
-    fprintf(stderr, "Successfully created a logical GPU device\n");
-#endif
-  }
-
-  struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[lgpu_index];
-
-  for (size_t i = 0; i < lgpu->render_capacity; ++i) {
-    if (0 > new_vulkan_queue(vk_ctx, indices, RENDER))
-      return EXIT_FAILURE;
-  }
-
-  for (size_t i = 0; i < lgpu->presentation_capacity; ++i) {
-    if (0 > new_vulkan_queue(vk_ctx, indices, PRESENTATION))
-      return EXIT_FAILURE;
-  }
-
-  for (size_t i = 0; i < lgpu->transfer_capacity; ++i) {
-    if (0 > new_vulkan_queue(vk_ctx, indices, TRANSFER_ONLY))
-      return EXIT_FAILURE;
-  }
-
-#ifdef DEBUG
-  fprintf(stderr, "Successfully created Vulkan queues\n");
-#endif
-
-  {
-    struct swapchain_details details =
-        swapchain_compatibility(vk_ctx, vk_ctx->physical_gpu);
-    int success = create_vulkan_swap_chain(w_ctx, &details, indices);
-
-    if (VK_SUCCESS == success) {
-#ifdef DEBUG
-      fprintf(stderr, "Successfully created swap chain\n");
-#endif
-    }
-  }
-
-  if (NULL == default_pipeline_vert.buffer ||
-      NULL == default_pipeline_frag.buffer) {
-    fprintf(stderr, "Failed to load compiled shaders\n");
-    return -1;
-  }
-
-  // allocate room for one pipeline
-  if (0 > allocate_pipelines(vk_ctx, indices, 2))
-    return -1;
-
-  {
-    VkRenderPass pass = create_render_pass(vk_ctx, indices);
-
-    if (VK_NULL_HANDLE == pass) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not create render pass\n");
-#endif
-      return -1;
-    }
-
-    {
-      int success = allocate_command_pools(vk_ctx, indices, 2);
-      if (0 != success) {
-#ifdef DEBUG
-        fprintf(stderr, "Could not allocate memory for command pools\n");
-#endif
-      }
-    }
-
-    {
-      indices->command_pool = 0;
-
-      {
-        int success = create_command_pool(vk_ctx, indices, RENDER_POOL);
-        if (0 != success) {
-#ifdef DEBUG
-          fprintf(stderr, "Could not create render command pool\n");
-#endif
-          return success;
-        }
-      }
-      {
-        int success = create_command_buffers(vk_ctx, indices, 1);
-        if (0 != success) {
-#ifdef DEBUG
-          fprintf(stderr, "Could not create render command buffer\n");
-#endif
-          return success;
-        }
-      }
-    }
-
-    {
-      indices->command_pool = 1;
-
-      {
-        int success = create_command_pool(vk_ctx, indices, TRANSFER_POOL);
-        if (0 != success) {
-#ifdef DEBUG
-          fprintf(stderr, "Could not create transfer command pool\n");
-#endif
-          return success;
-        }
-      }
-      {
-        int success = create_command_buffers(vk_ctx, indices, 1);
-        if (0 != success) {
-#ifdef DEBUG
-          fprintf(stderr, "Could not create transfer command buffer\n");
-#endif
-          return success;
-        }
-      }
-    }
-
-    {
-      if (0 > allocate_render_passes(vk_ctx, indices, 1))
-        return -1;
-    }
-
-    add_render_pass(vk_ctx, indices, pass);
-
-    struct vertex_attributes attr = {0};
-    VkVertexInputBindingDescription b_desc = {0};
-    VkVertexInputAttributeDescription a_descs[2] = {0};
-
-    b_desc.binding = 0;
-    b_desc.stride = sizeof(struct vertex);
-    b_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    a_descs[0].binding = 0;
-    a_descs[0].location = 0;
-    a_descs[0].format = VK_FORMAT_R32G32_SFLOAT;
-    a_descs[0].offset = offsetof(struct vertex, position);
-
-    a_descs[1].binding = 0;
-    a_descs[1].location = 1;
-    a_descs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    a_descs[1].offset = offsetof(struct vertex, color);
-
-    attr.attribute_count = 2;
-    attr.binding_count = 1;
-    attr.bindings = &b_desc;
-    attr.attributes = a_descs;
-
-    {
-      size_t shape_count = 0;
-
-      struct spirv_file spirvs[] = {default_pipeline_vert,
-                                    default_pipeline_frag};
-
-      struct shader_set shader_set = {0};
-
-      struct vertex_bundle triangle_vb = {0};
-      struct vertex triangle_vertices[] = {
-          {.position = {-0.15f, -0.65f}, .color = {1.0f, 0.0f, 0.0f}},
-          {.position = {0.35f, 0.35f}, .color = {0.0f, 1.0f, 0.0f}},
-          {.position = {-0.65f, 0.35f}, .color = {0.0f, 0.0f, 1.0f}}};
-
-      const size_t v1_size =
-          sizeof(triangle_vertices) / sizeof(*triangle_vertices);
-
-      init_vertices_struct(&triangle_vb);
-      allocate_vertices(&triangle_vb, v1_size);
-
-      for (size_t i = 0; i < v1_size; ++i) {
-        append_vertex(&triangle_vb, triangle_vertices[i]);
-      }
-
-      shape_buffer_init(&shapes[shape_count]);
-      shape_buffer_from_vertices(vk_ctx, indices, &shapes[shape_count++],
-                                 &triangle_vb);
-
-      struct vertex_bundle square_vb = {0};
-      struct vertex square_vertices[] = {
-          {.position = {0.15f, 0.15f}, .color = {1.0f, 0.0f, 0.0f}},
-          {.position = {0.65f, 0.15f}, .color = {0.0f, 1.0f, 0.0f}},
-          {.position = {0.65f, 0.65f}, .color = {0.0f, 0.0f, 1.0f}},
-          {.position = {0.15f, 0.65f}, .color = {1.0f, 1.0f, 1.0f}}};
-
-      const size_t v2_size = sizeof(square_vertices) / sizeof(*square_vertices);
-
-      init_vertices_struct(&square_vb);
-      allocate_vertices(&square_vb, v2_size);
-
-      for (size_t i = 0; i < v2_size; ++i) {
-        append_vertex(&square_vb, square_vertices[i]);
-      }
-
-      uint16_t square_vertex_indices[] = {0, 1, 2, 2, 0, 3};
-      square_vb.indices = square_vertex_indices;
-      square_vb.index_count =
-          sizeof(square_vertex_indices) / sizeof(*square_vertex_indices);
-
-      shape_buffer_init(&shapes[shape_count]);
-      shape_buffer_from_vertices(vk_ctx, indices, &shapes[shape_count++],
-                                 &square_vb);
-
-      indices->pipeline = 0;
-      int success = create_graphics_pipeline(
-          vk_ctx, indices, spirvs, sizeof(spirvs) / sizeof(*spirvs),
-          &shader_set, &attr, shapes, shape_count);
-
-      if (0 != success) {
-#ifdef DEBUG
-        fprintf(stderr, "Could not create graphics pipeline\n");
-#endif
-        return success;
-      }
-    }
-
-#ifdef DEBUG
-    fprintf(stderr, "Successfully created graphics pipeline\n");
-#endif
-  }
-
-  {
-    int success = create_framebuffers(vk_ctx, indices);
-    if (0 != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not create framebuffers for swapchain\n");
-#endif
-      return success;
-    }
-  }
-
-#ifdef DEBUG
-  fprintf(stderr, "Successfully created framebuffers and command buffers\n");
-#endif
-
-  return 0;
+  PRINT_FAILURE(fpx3d_vk_free_shapebuffer(lgpu, &triangle_shape));
+  PRINT_FAILURE(fpx3d_vk_free_shapebuffer(lgpu, &square_shape));
+  PRINT_FAILURE(fpx3d_vk_destroy_shadermodules(&modules, lgpu));
+  PRINT_FAILURE(fpx3d_vk_destroy_pipeline_layout(lgpu, pipeline_layout));
 }
 
 int main(void) {
@@ -410,70 +157,158 @@ int main(void) {
   signal(SIGABRT, sig_catcher);
   signal(SIGKILL, sig_catcher);
 
-  shapes = (struct shape_buffer *)calloc(20, sizeof(*shapes));
+  // VULKAN SETUP
 
-  const char *val_layers[] = {"VK_LAYER_KHRONOS_validation"};
-  const char *ext[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  VkPhysicalDeviceFeatures lgpu_features = {
+      .geometryShader = VK_TRUE,
+  };
 
-  vulkan_context vk_ctx = {0};
+  fpx3d_vk_set_required_surfaceformats(&sc_reqs, formats, ARRAY_SIZE(formats));
+  fpx3d_vk_set_required_presentmodes(&sc_reqs, modes, ARRAY_SIZE(modes));
 
-  init_vulkan_context(&vk_ctx);
+  Fpx3d_Wnd_Context wnd_ctx = {.glfwWindow = NULL,
+                               .windowDimensions = {800, 800},
+                               .windowTitle = "YAY",
+                               .resized = false};
 
-  VkApplicationInfo app_info = {.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
-                                .apiVersion = VK_API_VERSION_1_0,
-                                .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-                                .pEngineName = "GOODGIRL",
-                                .pApplicationName = "GG_ENDING_TEST",
-                                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                                .pNext = NULL};
+  {
+    VkApplicationInfo app_info = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                  .apiVersion = VK_API_VERSION_1_0,
+                                  .pApplicationName = "GG_ENGINE_TEST",
+                                  .applicationVersion =
+                                      VK_MAKE_VERSION(0, 1, 0),
+                                  .pEngineName = "GOODGIRL",
+                                  .engineVersion = VK_MAKE_VERSION(0, 2, 0),
+                                  .pNext = NULL};
 
-  vk_ctx.app_info = app_info;
+    vk_ctx.appInfo = app_info;
 
-  vk_ctx.validation_layers = val_layers;
-  vk_ctx.validation_layers_count = sizeof(val_layers) / sizeof(*val_layers);
+    vk_ctx.validationLayers = val_layers;
+    vk_ctx.validationLayersCount = ARRAY_SIZE(val_layers);
+    vk_ctx.lgpuExtensions = extensions;
+    vk_ctx.lgpuExtensionCount = ARRAY_SIZE(extensions);
 
-  vk_ctx.lgpu_extensions = ext;
-  vk_ctx.lgpu_extension_count = sizeof(ext) / sizeof(*ext);
-
-  struct indices indices = {0};
-
-  int setup_result = setup_vulkan(&w_ctx, &vk_ctx, &indices);
-  if (0 != setup_result) {
-    fprintf(stderr,
-            "Errors occured while setting up Vulkan environment. Quitting.\n");
-    destroy_vulkan_window(&w_ctx);
-    exit(setup_result);
+    PRINT_FAILURE(fpx3d_vk_set_custom_pointer(&vk_ctx, "🏳️‍⚧️"));
   }
 
-#ifdef DEBUG
-  fprintf(stderr, "Vulkan environment set up and ready to go\n");
-#endif
+  // --------------- SHADERS --------------
 
-  // sleep(1);
+  Fpx3d_Vk_SpirvFile vertex_shader =
+      fpx3d_vk_read_spirv_file("shaders/default.vert.spv", SHADER_STAGE_VERTEX);
+  Fpx3d_Vk_SpirvFile fragment_shader = fpx3d_vk_read_spirv_file(
+      "shaders/default.frag.spv", SHADER_STAGE_FRAGMENT);
 
-  uint8_t p_idx[] = {0};
+  Fpx3d_Vk_SpirvFile shaders[] = {vertex_shader, fragment_shader};
 
-  // struct timespec ts = {0};
-  // struct timespec new_ts = {0};
+  // ----------- END OF SHADERS -----------
 
-  indices.command_pool = 0;
+  // --------------- VERTICES --------------
 
-  while (!glfwWindowShouldClose(w_ctx.glfw_window)) {
+  Fpx3d_Vk_Vertex triangle[] = {
+      {.position = {-0.15f, -0.65f}, .color = {1.0f, 0.0f, 0.0f}},
+      {.position = {0.35f, 0.35f}, .color = {0.0f, 1.0f, 0.0f}},
+      {.position = {-0.65f, 0.35f}, .color = {0.0f, 0.0f, 1.0f}}};
+
+  Fpx3d_Vk_Vertex square[] = {
+      {.position = {0.15f, 0.15f}, .color = {1.0f, 0.0f, 0.0f}},
+      {.position = {0.65f, 0.15f}, .color = {0.0f, 1.0f, 0.0f}},
+      {.position = {0.65f, 0.65f}, .color = {0.0f, 0.0f, 1.0f}},
+      {.position = {0.15f, 0.65f}, .color = {1.0f, 1.0f, 1.0f}}};
+
+  Fpx3d_Vk_VertexBundle triangle_bundle = {0};
+  Fpx3d_Vk_VertexBundle square_bundle = {0};
+
+  PRINT_FAILURE(fpx3d_vk_allocate_vertices(
+      &triangle_bundle, ARRAY_SIZE(triangle), sizeof(triangle[0])));
+  PRINT_FAILURE(fpx3d_vk_allocate_vertices(&square_bundle, ARRAY_SIZE(square),
+                                           sizeof(square[0])));
+
+  PRINT_FAILURE(fpx3d_vk_append_vertices(&triangle_bundle, triangle,
+                                         ARRAY_SIZE(triangle)));
+  PRINT_FAILURE(
+      fpx3d_vk_append_vertices(&square_bundle, square, ARRAY_SIZE(square)));
+
+  uint32_t square_indices[] = {0, 1, 2, 2, 0, 3};
+
+  PRINT_FAILURE(fpx3d_vk_set_indices(&square_bundle, square_indices,
+                                     ARRAY_SIZE(square_indices)));
+
+  Fpx3d_Vk_VertexAttribute vertex_attributes[] = {
+      {.format = VEC2_32BIT_SFLOAT,
+       .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, position)},
+      {.format = VEC3_32BIT_SFLOAT,
+       .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, color)}};
+
+  Fpx3d_Vk_VertexBinding vertex_binding = {0};
+  vertex_binding.sizePerVertex = sizeof(Fpx3d_Vk_Vertex);
+  vertex_binding.attributeCount = 2;
+  vertex_binding.attributes = vertex_attributes;
+
+  // ----------- END OF VERTICES -----------
+
+  PRINT_FAILURE(fpx3d_vk_init_context(&vk_ctx, &wnd_ctx));
+  PRINT_FAILURE(fpx3d_vk_create_window(&vk_ctx));
+
+  PRINT_FAILURE(fpx3d_vk_select_gpu(&vk_ctx, gpu_suitability));
+
+  PRINT_FAILURE(fpx3d_vk_allocate_logicalgpus(&vk_ctx, 2));
+  PRINT_FAILURE(
+      fpx3d_vk_create_logicalgpu_at(&vk_ctx, 1, lgpu_features, 1, 1, 2));
+  lgpu = fpx3d_vk_get_logicalgpu_at(&vk_ctx, 1);
+
+  PRINT_FAILURE(fpx3d_vk_create_all_available_queues(lgpu));
+
+  graphics_queue = fpx3d_vk_get_queue_at(lgpu, 0, GRAPHICS_QUEUE);
+  present_queue = fpx3d_vk_get_queue_at(lgpu, 0, PRESENT_QUEUE);
+  transfer_queue = fpx3d_vk_get_queue_at(lgpu, 0, TRANSFER_QUEUE);
+
+  swapchain_properties =
+      fpx3d_vk_get_swapchain_support(&vk_ctx, vk_ctx.physicalGpu, sc_reqs);
+  PRINT_FAILURE(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, swapchain_properties));
+
+  PRINT_FAILURE(fpx3d_vk_allocate_commandpools(lgpu, 1));
+  PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 0, TRANSFER_POOL));
+  transfer_pool = fpx3d_vk_get_commandpool_at(lgpu, 0);
+
+  PRINT_FAILURE(fpx3d_vk_allocate_commandbuffers_at_pool(lgpu, 0, 1));
+  transfer_buffer = fpx3d_vk_get_commandbuffer_at(transfer_pool, 0);
+
+  PRINT_FAILURE(fpx3d_vk_allocate_renderpasses(lgpu, 1));
+  PRINT_FAILURE(fpx3d_vk_create_renderpass_at(lgpu, 0));
+  render_pass = fpx3d_vk_get_renderpass_at(lgpu, 0);
+
+  PRINT_FAILURE(fpx3d_vk_create_framebuffers(
+      fpx3d_vk_get_current_swapchain(lgpu), lgpu, render_pass));
+
+  pipeline_layout = fpx3d_vk_create_pipeline_layout(lgpu);
+
+  PRINT_FAILURE(fpx3d_vk_create_shapebuffer(&vk_ctx, lgpu, &triangle_bundle,
+                                            &triangle_shape));
+  PRINT_FAILURE(fpx3d_vk_create_shapebuffer(&vk_ctx, lgpu, &square_bundle,
+                                            &square_shape));
+
+  PRINT_FAILURE(fpx3d_vk_load_shadermodules(shaders, ARRAY_SIZE(shaders), lgpu,
+                                            &modules));
+
+  PRINT_FAILURE(fpx3d_vk_allocate_pipelines(lgpu, 1));
+
+  PRINT_FAILURE(fpx3d_vk_create_graphics_pipeline_at(
+      lgpu, 0, pipeline_layout, render_pass, &modules, &vertex_binding, 1));
+  pipeline = fpx3d_vk_get_pipeline_at(lgpu, 0);
+
+  Fpx3d_Vk_ShapeBuffer shapes[] = {triangle_shape, square_shape};
+
+  PRINT_FAILURE(
+      fpx3d_vk_add_shapes_to_pipeline(shapes, ARRAY_SIZE(shapes), pipeline));
+
+  if (NULL == vk_ctx.windowContext->glfwWindow)
+    exit(EXIT_FAILURE);
+
+  while (!glfwWindowShouldClose(vk_ctx.windowContext->glfwWindow)) {
     glfwPollEvents();
-
-    // {
-    //   timespec_get(&new_ts, TIME_UTC);
-    //   uint64_t diff = new_ts.tv_nsec - ts.tv_nsec;
-    //   uint64_t fps = (1000 * 1000 * 1000) / diff;
-    //   fprintf(stderr, "\r      ");
-    //   fprintf(stderr, "\r%lu", fps);
-    //   ts = new_ts;
-    // }
-
-    draw_frame(&w_ctx, &indices, p_idx, sizeof(p_idx) / sizeof(*p_idx));
+    PRINT_FAILURE(fpx3d_vk_draw_frame(&vk_ctx, lgpu, pipeline, 1,
+                                      graphics_queue, present_queue));
   }
 
-  destroy_vulkan_window(&w_ctx);
-
-  return EXIT_SUCCESS;
+  PRINT_FAILURE(fpx3d_vk_destroy_window(&vk_ctx, dest_callback));
 }

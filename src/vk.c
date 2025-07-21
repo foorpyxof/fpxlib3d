@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) Erynn Scholtes
+ * SPDX-License-Identifier: MIT
+ */
+
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -7,24 +15,20 @@
 #include <string.h>
 
 #include <fcntl.h>
-#include <vulkan/vulkan_core.h>
 
-#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-
 #include <cglm/mat4.h>
 #include <cglm/vec4.h>
 
-#define TRUE 1
-#define FALSE 0
+#ifdef DEBUG
+#define FPX_VK_USE_VALIDATION_LAYERS
+#define FPX3D_DEBUG_ENABLE
+#endif
 
+#include "debug.h"
+#include "fpx3d.h"
 #include "vk.h"
-
-#define ABS(x) ((x < 0) ? (x * -1) : (x))
-#define MAX(x, y) ((x > y) ? x : y)
-#define MIN(x, y) ((x < y) ? x : y)
-#define CLAMP(v, x, y) ((v < x) ? x : (v > y) ? y : v)
-#define CONDITIONAL(cond, then, else) ((cond) ? (then) : (else))
+#include "window.h"
 
 #define FREE_SAFE(ptr)                                                         \
   {                                                                            \
@@ -35,71 +39,537 @@
   }
 
 #define NULL_CHECK(value, ret_code)                                            \
-  if (NULL == value)                                                           \
+  if (NULL == (value))                                                         \
   return ret_code
 
 // const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
-
-#ifdef DEBUG
-#define FPX_VK_USE_VALIDATION_LAYERS
-#endif
 
 #ifndef MAX_IN_FLIGHT
 #define MAX_IN_FLIGHT 2
 #endif
 
-VkResult init_vulkan_context(vulkan_context *ctx) {
-  memset(ctx, 0, sizeof(*ctx));
+#define LGPU_CHECK(lgpu, retval)                                               \
+  if (VK_NULL_HANDLE == (lgpu)->handle) {                                      \
+    return retval;                                                             \
+  }
 
-  return VK_SUCCESS;
+//
+//  START OF STATIC FUNCTION DECLARATIONS
+//
+
+static void _new_buffer(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
+                        VkDeviceSize size, VkBufferUsageFlags,
+                        VkMemoryPropertyFlags, VkSharingMode,
+                        struct fpx3d_vulkan_buffer *output);
+
+static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *, struct fpx3d_vulkan_buffer *,
+                           void *data, VkDeviceSize size);
+
+static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
+                       struct fpx3d_vulkan_buffer *src,
+                       struct fpx3d_vulkan_buffer *dst, VkDeviceSize size,
+                       VkCommandPool transfer_cmd_pool);
+
+static struct fpx3d_vulkan_buffer
+_new_buffer_with_data(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+                      void *data, VkDeviceSize size,
+                      VkBufferUsageFlags usage_flags);
+
+static void _destroy_buffer_object(Fpx3d_Vk_LogicalGpu *,
+                                   struct fpx3d_vulkan_buffer *);
+
+static struct fpx3d_vulkan_buffer _new_vertex_buffer(VkPhysicalDevice,
+                                                     Fpx3d_Vk_LogicalGpu *,
+                                                     Fpx3d_Vk_VertexBundle *);
+
+static struct fpx3d_vulkan_buffer _new_index_buffer(VkPhysicalDevice,
+                                                    Fpx3d_Vk_LogicalGpu *,
+                                                    Fpx3d_Vk_VertexBundle *);
+
+static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
+                                            Fpx3d_Vk_E_ShaderStage stage);
+
+static VkShaderModule _new_shader_module(Fpx3d_Vk_LogicalGpu *lgpu,
+                                         Fpx3d_Vk_SpirvFile *spirv);
+
+static void _glfw_resize_callback(GLFWwindow *, int width, int height);
+
+static void _destroy_lgpu(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *);
+
+static void _destroy_command_pool(Fpx3d_Vk_LogicalGpu *,
+                                  Fpx3d_Vk_CommandPool *);
+
+static Fpx3d_E_Result _realloc_array(void **arr, size_t obj_size, size_t amount,
+                                     size_t *old_capacity);
+
+static bool _qf_meets_requirements(VkQueueFamilyProperties,
+                                   Fpx3d_Vk_QueueFamilyRequirements *,
+                                   size_t qf_index);
+
+static Fpx3d_Vk_QueueFamily
+_choose_queue_family(Fpx3d_Vk_Context *, Fpx3d_Vk_QueueFamilyRequirements *);
+
+static struct fpx3d_vulkan_queues *
+_get_queues_ptr_by_type(Fpx3d_Vk_LogicalGpu *lgpu, Fpx3d_Vk_E_QueueType type);
+
+static Fpx3d_E_Result _destroy_swapchain(Fpx3d_Vk_LogicalGpu *,
+                                         Fpx3d_Vk_Swapchain *, bool force);
+
+static Fpx3d_E_Result _retire_current_swapchain(Fpx3d_Vk_LogicalGpu *);
+
+static VkExtent2D _new_swapchain_extent(Fpx3d_Wnd_Context *wnd,
+                                        VkSurfaceCapabilitiesKHR cap);
+
+static Fpx3d_E_Result _construct_command_pool(Fpx3d_Vk_LogicalGpu *,
+                                              Fpx3d_Vk_CommandPool *,
+                                              Fpx3d_Vk_E_CommandPoolType);
+
+static bool _surface_format_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
+                                   VkSurfaceFormatKHR *fmts, size_t fmt_count,
+                                   VkSurfaceFormatKHR *output);
+
+static bool _present_mode_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
+                                 VkPresentModeKHR *mds, size_t md_count,
+                                 VkPresentModeKHR *output);
+//
+//  END OF STATIC FUNCTION DECLARATIONS
+//
+
+// -----------------------------------------------------
+
+//
+//  START OF PUBLIC UTILITY FUNCTION IMPLEMENTATIONS
+//
+
+Fpx3d_E_Result
+fpx3d_vk_set_required_surfaceformats(Fpx3d_Vk_SwapchainRequirements *reqs,
+                                     VkSurfaceFormatKHR *formats,
+                                     size_t count) {
+  NULL_CHECK(reqs, FPX3D_ARGS_ERROR);
+  NULL_CHECK(formats, FPX3D_ARGS_ERROR);
+
+  if (1 > count)
+    return FPX3D_SUCCESS;
+
+  {
+    reqs->surfaceFormats = formats;
+    reqs->surfaceFormatsCount = count;
+  }
+
+  return FPX3D_SUCCESS;
 }
 
-uint8_t validation_layers_supported(const char **validation_layers,
-                                    size_t layer_count) {
-  if (layer_count == 0)
-    return TRUE;
+Fpx3d_E_Result
+fpx3d_vk_set_required_presentmodes(Fpx3d_Vk_SwapchainRequirements *reqs,
+                                   VkPresentModeKHR *modes, size_t count) {
+  NULL_CHECK(reqs, FPX3D_ARGS_ERROR);
+  NULL_CHECK(modes, FPX3D_ARGS_ERROR);
+
+  if (1 > count)
+    return FPX3D_SUCCESS;
+
+  {
+    reqs->presentModes = modes;
+    reqs->presentModesCount = count;
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result
+fpx3d_vk_blacklist_queuefamily_index(Fpx3d_Vk_QueueFamilyRequirements *reqs,
+                                     size_t index) {
+  NULL_CHECK(reqs, FPX3D_ARGS_ERROR);
+
+  if (63 < index)
+    return FPX3D_ARGS_ERROR;
+
+  reqs->indexBlacklistBits |= (1 << index);
+
+  return FPX3D_SUCCESS;
+}
+
+// vec2 is an array of 2 floats
+Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *vert, vec2 pos) {
+  NULL_CHECK(vert, FPX3D_ARGS_ERROR);
+  NULL_CHECK(pos, FPX3D_ARGS_ERROR);
+
+  memcpy(vert->position, pos, 2 * sizeof(*pos));
+
+  return FPX3D_SUCCESS;
+}
+
+// vec3 is an array of 3 floats
+Fpx3d_E_Result fpx3d_set_vertex_color(Fpx3d_Vk_Vertex *vert, vec3 color) {
+  NULL_CHECK(vert, FPX3D_ARGS_ERROR);
+  NULL_CHECK(color, FPX3D_ARGS_ERROR);
+
+  memcpy(vert->color, color, 3 * sizeof(*color));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_allocate_vertices(Fpx3d_Vk_VertexBundle *bundle,
+                                          size_t amount,
+                                          size_t single_vertex_size) {
+  if (1 > amount || 1 > single_vertex_size)
+    return FPX3D_SUCCESS;
+
+  NULL_CHECK(bundle, FPX3D_ARGS_ERROR);
+
+  bundle->vertexDataSize = single_vertex_size;
+
+  return _realloc_array((void **)&bundle->vertices, single_vertex_size, amount,
+                        &bundle->vertexCapacity);
+}
+
+Fpx3d_E_Result fpx3d_vk_append_vertices(Fpx3d_Vk_VertexBundle *bundle,
+                                        Fpx3d_Vk_Vertex *vertices,
+                                        size_t amount) {
+  if (1 > amount)
+    return FPX3D_SUCCESS;
+
+  NULL_CHECK(bundle, FPX3D_ARGS_ERROR);
+  NULL_CHECK(vertices, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(bundle->vertices, FPX3D_VK_NULLPTR_ERROR);
+
+  if (bundle->vertexCount + amount > bundle->vertexCapacity)
+    return FPX3D_GENERIC_ERROR;
+
+  memcpy((uint8_t *)bundle->vertices +
+             (bundle->vertexCount * bundle->vertexDataSize),
+         vertices, amount * bundle->vertexDataSize);
+
+  bundle->vertexCount += amount;
+  bundle->vertexDataSize = sizeof(*vertices);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_set_indices(Fpx3d_Vk_VertexBundle *bundle,
+                                    uint32_t *indices, size_t amount) {
+  if (1 > amount)
+    return FPX3D_SUCCESS;
+
+  NULL_CHECK(bundle, FPX3D_ARGS_ERROR);
+  NULL_CHECK(indices, FPX3D_ARGS_ERROR);
+
+  uint32_t *ind = (uint32_t *)calloc(amount, sizeof(*indices));
+  if (NULL == ind) {
+    perror("calloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  memcpy(ind, indices, amount * sizeof(*indices));
+
+  FREE_SAFE(bundle->indices);
+  bundle->indices = ind;
+  bundle->indexCount = amount;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_free_vertices(Fpx3d_Vk_VertexBundle *bundle) {
+  NULL_CHECK(bundle, FPX3D_ARGS_ERROR);
+
+  FREE_SAFE(bundle->vertices);
+  FREE_SAFE(bundle->indices);
+
+  memset(bundle, 0, sizeof(*bundle));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_create_shapebuffer(Fpx3d_Vk_Context *vk_ctx,
+                                           Fpx3d_Vk_LogicalGpu *lgpu,
+                                           Fpx3d_Vk_VertexBundle *vertex_input,
+                                           Fpx3d_Vk_ShapeBuffer *shape_output) {
+  NULL_CHECK(vk_ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(vertex_input, FPX3D_ARGS_ERROR);
+  NULL_CHECK(shape_output, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(vk_ctx->physicalGpu, FPX3D_VK_BAD_GPU_HANDLE_ERROR);
+  NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (1 > vertex_input->vertexCount || NULL == vertex_input->vertices)
+    return FPX3D_ARGS_ERROR;
+
+  struct fpx3d_vulkan_buffer vb = {0};
+  struct fpx3d_vulkan_buffer ib = {0};
+
+  vb = _new_vertex_buffer(vk_ctx->physicalGpu, lgpu, vertex_input);
+
+  if (false == vb.isValid) {
+    _destroy_buffer_object(lgpu, &vb);
+    return -2;
+  }
+
+  if (0 < vertex_input->indexCount) {
+    ib = _new_index_buffer(vk_ctx->physicalGpu, lgpu, vertex_input);
+
+    if (false == ib.isValid) {
+      _destroy_buffer_object(lgpu, &vb);
+      _destroy_buffer_object(lgpu, &ib);
+      return -2;
+    }
+
+    shape_output->indexBuffer = ib;
+  }
+
+  shape_output->vertexBuffer = vb;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_free_shapebuffer(Fpx3d_Vk_LogicalGpu *lgpu,
+                                         Fpx3d_Vk_ShapeBuffer *shape) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(shape, FPX3D_ARGS_ERROR);
+
+  _destroy_buffer_object(lgpu, &shape->vertexBuffer);
+  _destroy_buffer_object(lgpu, &shape->indexBuffer);
+
+  memset(shape, 0, sizeof(*shape));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_add_shapes_to_pipeline(Fpx3d_Vk_ShapeBuffer *shapes,
+                                               size_t count,
+                                               Fpx3d_Vk_Pipeline *pipeline) {
+  NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
+
+  if (1 > count)
+    return FPX3D_SUCCESS;
+
+  NULL_CHECK(shapes, FPX3D_ARGS_ERROR);
+
+  pipeline->graphics.shapes = (Fpx3d_Vk_ShapeBuffer *)realloc(
+      pipeline->graphics.shapes,
+      (pipeline->graphics.shapeCount + count) * sizeof(Fpx3d_Vk_ShapeBuffer));
+
+  if (NULL == pipeline->graphics.shapes) {
+    perror("realloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  memcpy(&pipeline->graphics.shapes[pipeline->graphics.shapeCount], shapes,
+         count * sizeof(*shapes));
+
+  pipeline->graphics.shapeCount += count;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
+                                            Fpx3d_Vk_E_ShaderStage stage) {
+  Fpx3d_Vk_SpirvFile retval = {0};
+
+  FILE *fp = fopen(filename, "r");
+  if (NULL == fp) {
+    perror("fopen()");
+    FPX3D_WARN("Could not open file \"%s\". Does it exist in this location?",
+               filename);
+    return retval;
+  }
+
+  if (0 > fseek(fp, 0, SEEK_END)) {
+    perror("fseek()");
+    fclose(fp);
+    return retval;
+  }
+
+  int size = ftell(fp);
+  if (0 > size) {
+    perror("ftell()");
+    fclose(fp);
+    return retval;
+  }
+
+  if (4 > size)
+    return retval;
+
+  rewind(fp);
+
+  uint32_t magic = 0;
+  fread(&magic, sizeof(uint32_t), 1, fp);
+  if (0x07230203 != magic) {
+    // bad file format (probably)
+    // also add more checking, bcs this isn't good enough lol
+    return retval;
+  }
+
+  rewind(fp);
+
+  FPX3D_DEBUG("Read %d bytes from file \"%s\"", size, filename);
+
+  // align to 4 bytes (sizeof uint32_t) because the shader module reads it
+  // using a uint32_t pointer for some reason
+  retval.buffer =
+      (uint8_t *)malloc(size + (sizeof(uint32_t) - (size % sizeof(uint32_t))));
+  if (NULL == retval.buffer) {
+    perror("malloc()");
+    fclose(fp);
+    return retval;
+  }
+
+  if (size > (int)fread(retval.buffer, 1, size, fp)) {
+    FPX3D_WARN("Read too little from SPIR-V file");
+    FREE_SAFE(retval.buffer);
+    fclose(fp);
+    return retval;
+  }
+
+  retval.filesize = size;
+  retval.stage = stage;
+
+  fclose(fp);
+
+  return retval;
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_spirv_file(Fpx3d_Vk_SpirvFile *spirv) {
+  FREE_SAFE(spirv->buffer);
+  memset(spirv, 0, sizeof(*spirv));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_load_shadermodules(Fpx3d_Vk_SpirvFile *spirvs,
+                                           size_t spirv_count,
+                                           Fpx3d_Vk_LogicalGpu *lgpu,
+                                           Fpx3d_Vk_ShaderModuleSet *output) {
+  NULL_CHECK(spirvs, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(output, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  Fpx3d_Vk_ShaderModuleSet set = {0};
+
+  size_t stage_count = 0;
+
+  for (size_t i = 0; i < spirv_count; ++i) {
+    if (SHADER_STAGE_INVALID == spirvs[i].stage) {
+      char lineinfo[64] = {0};
+      FPX3D_LINE_INFO(lineinfo);
+      FPX3D_WARN("Invalid SPIR-V file at %s", lineinfo);
+
+      continue;
+    }
+
+    VkShaderModule *module_in_output =
+        _select_module_stage(output, spirvs[i].stage);
+    VkShaderModule *module_in_retval =
+        _select_module_stage(&set, spirvs[i].stage);
+
+    if (NULL == module_in_output || NULL == module_in_retval ||
+        VK_NULL_HANDLE != *module_in_output) {
+      continue;
+    }
+
+    ++stage_count;
+
+    *module_in_retval = _new_shader_module(lgpu, &spirvs[i]);
+    if (VK_NULL_HANDLE == *module_in_retval) {
+      fpx3d_vk_destroy_shadermodules(&set, lgpu);
+      return FPX3D_GENERIC_ERROR;
+    }
+  }
+
+  if (0 == stage_count) {
+    return FPX3D_VK_NO_SHADER_STAGES;
+  }
+
+#define COPY_IF_NOT_EXIST(dst, src)                                            \
+  {                                                                            \
+    if (VK_NULL_HANDLE == dst) {                                               \
+      dst = src;                                                               \
+    }                                                                          \
+  }
+
+  COPY_IF_NOT_EXIST(output->vertex, set.vertex);
+  COPY_IF_NOT_EXIST(output->tesselationControl, set.tesselationControl);
+  COPY_IF_NOT_EXIST(output->tesselationEvaluation, set.tesselationEvaluation);
+  COPY_IF_NOT_EXIST(output->geometry, set.geometry);
+  COPY_IF_NOT_EXIST(output->fragment, set.fragment);
+
+  return FPX3D_SUCCESS;
+}
+
+#define DESTROY_IF_EXISTS(mod)                                                 \
+  {                                                                            \
+    if (VK_NULL_HANDLE != mod) {                                               \
+      vkDestroyShaderModule(lgpu->handle, mod, NULL);                          \
+    }                                                                          \
+  }
+
+Fpx3d_E_Result
+fpx3d_vk_destroy_shadermodules(Fpx3d_Vk_ShaderModuleSet *to_destroy,
+                               Fpx3d_Vk_LogicalGpu *lgpu) {
+
+  DESTROY_IF_EXISTS(to_destroy->vertex);
+  DESTROY_IF_EXISTS(to_destroy->tesselationControl);
+  DESTROY_IF_EXISTS(to_destroy->tesselationEvaluation);
+  DESTROY_IF_EXISTS(to_destroy->geometry);
+  DESTROY_IF_EXISTS(to_destroy->fragment);
+
+  memset(to_destroy, 0, sizeof(*to_destroy));
+
+  return FPX3D_SUCCESS;
+}
+
+#undef DESTROY_IF_EXISTS
+
+bool fpx3d_vk_validation_layers_supported(const char **layers,
+                                          size_t layer_count) {
+  if (1 > layer_count)
+    return true;
 
   uint32_t available = 0;
   VkLayerProperties *available_layers = NULL;
 
   vkEnumerateInstanceLayerProperties(&available, NULL);
 
-  if (available < 1 || available < layer_count)
-    return FALSE;
+  if (available < layer_count)
+    return false;
 
   available_layers =
       (VkLayerProperties *)calloc(available, sizeof(VkLayerProperties));
 
   if (NULL == available_layers) {
     perror("calloc()");
-    fprintf(stderr, "Error while checking for Vulkan validation layers.\n");
-    return FALSE;
+    FPX3D_ERROR("Error while checking for Vulkan validation layers.");
+    return false;
   }
 
   vkEnumerateInstanceLayerProperties(&available, available_layers);
 
   for (size_t i = 0; i < layer_count; ++i) {
-    uint8_t found = FALSE;
+    uint8_t found = false;
 
     for (uint32_t j = 0; j < available; ++j) {
-      if (0 == strcmp(validation_layers[i], available_layers[j].layerName)) {
-        found = TRUE;
+      if (0 == strcmp(layers[i], available_layers[j].layerName)) {
+        found = true;
         break;
       }
     }
 
-    if (FALSE == found)
-      return FALSE;
+    if (false == found)
+      return false;
   }
 
-  return TRUE;
+  return true;
 }
 
-uint8_t device_extensions_supported(VkPhysicalDevice dev,
-                                    const char **extensions,
-                                    size_t extension_count) {
+bool fpx3d_vk_device_extensions_supported(VkPhysicalDevice dev,
+                                          const char **extensions,
+                                          size_t extension_count) {
+  NULL_CHECK(dev, false);
+
   if (extension_count == 0)
-    return TRUE;
+    return true;
 
   uint32_t available = 0;
   VkExtensionProperties *available_extensions = NULL;
@@ -107,101 +577,163 @@ uint8_t device_extensions_supported(VkPhysicalDevice dev,
   vkEnumerateDeviceExtensionProperties(dev, NULL, &available, NULL);
 
   if (available < 1 || available < extension_count)
-    return FALSE;
+    return false;
 
   available_extensions =
       (VkExtensionProperties *)calloc(available, sizeof(VkLayerProperties));
 
   if (NULL == available_extensions) {
     perror("calloc()");
-    fprintf(stderr, "Error while checking for Vulkan validation layers.\n");
-    return FALSE;
+    FPX3D_ERROR("Error while checking for Vulkan validation layers.");
+    return false;
   }
 
   vkEnumerateDeviceExtensionProperties(dev, NULL, &available,
                                        available_extensions);
 
   for (size_t i = 0; i < extension_count; ++i) {
-    uint8_t found = FALSE;
+    uint8_t found = false;
 
     for (uint32_t j = 0; j < available; ++j) {
       if (0 == strcmp(extensions[i], available_extensions[j].extensionName)) {
-        found = TRUE;
+        found = true;
         break;
       }
     }
 
-    if (FALSE == found)
-      return FALSE;
+    if (false == found)
+      return false;
   }
 
-  return TRUE;
+  return true;
 }
 
-static void glfw_resize_callback(GLFWwindow *window, int width, int height) {
-  window_context *w_ctx = (window_context *)glfwGetWindowUserPointer(window);
+Fpx3d_Vk_SwapchainProperties
+fpx3d_vk_get_swapchain_support(Fpx3d_Vk_Context *ctx, VkPhysicalDevice dev,
+                               Fpx3d_Vk_SwapchainRequirements reqs) {
+  Fpx3d_Vk_SwapchainProperties props = {0};
 
-  if (NULL == w_ctx) {
-#ifdef DEBUG
-    fprintf(stderr, "GLFW resize callback called, but could not retrieve "
-                    "matching window_context\n");
-#endif
-    return;
-  }
+  const char *ext = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+  bool are_supported = fpx3d_vk_device_extensions_supported(dev, &ext, 1);
 
-  w_ctx->window_dimensions[0] = (uint32_t)width;
-  w_ctx->window_dimensions[1] = (uint32_t)height;
+  if (false == are_supported)
+    return props;
 
-  w_ctx->resized = TRUE;
+  props.surfaceFormatValid =
+      _surface_format_picker(dev, ctx->vkSurface, reqs.surfaceFormats,
+                             reqs.surfaceFormatsCount, &props.surfaceFormat);
+
+  props.presentModeValid =
+      _present_mode_picker(dev, ctx->vkSurface, reqs.presentModes,
+                           reqs.presentModesCount, &props.presentMode);
+
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, ctx->vkSurface,
+                                            &props.surfaceCapabilities);
+
+  return props;
 }
 
-int create_vulkan_window(window_context *ctx) {
-  if (VK_STRUCTURE_TYPE_APPLICATION_INFO != ctx->vk_context->app_info.sType ||
-      NULL == ctx->window_title || 1 > ctx->window_dimensions[0] ||
-      1 > ctx->window_dimensions[1])
-    return -99;
+//
+//   END OF PUBLIC UTILITY FUNCTION IMPLEMENTATIONS
+//
+
+// -----------------------------------------------------
+
+//
+//   START OF LIBRARY IMPLEMENTATION
+//
+
+Fpx3d_E_Result fpx3d_vk_set_custom_pointer(Fpx3d_Vk_Context *ctx, void *ptr) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+
+  ctx->customPointer = ptr;
+
+  return FPX3D_SUCCESS;
+}
+
+void *fpx3d_vk_get_custom_pointer(Fpx3d_Vk_Context *ctx) {
+  NULL_CHECK(ctx, NULL);
+
+  return ctx->customPointer;
+}
+
+Fpx3d_Wnd_Context *fpx3d_vk_get_windowcontext(Fpx3d_Vk_Context *vk_ctx) {
+  NULL_CHECK(vk_ctx, NULL);
+
+  return vk_ctx->windowContext;
+}
+
+Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *ctx,
+                                     Fpx3d_Wnd_Context *wnd) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+
+  ctx->windowContext = wnd;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+
+  Fpx3d_Wnd_Context *wnd = ctx->windowContext;
+
+  NULL_CHECK(wnd, FPX3D_WND_INVALID_DETAILS_ERROR);
+
+  if (VK_STRUCTURE_TYPE_APPLICATION_INFO != ctx->appInfo.sType)
+    return FPX3D_VK_APPINFO_ERROR;
+
+  if (NULL == wnd->windowTitle || 1 > wnd->windowDimensions[0] ||
+      1 > wnd->windowDimensions[1])
+    return FPX3D_WND_INVALID_DETAILS_ERROR;
 
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
-  const char **val_layers = ctx->vk_context->validation_layers;
+  const char **val_layers = ctx->validationLayers;
+  size_t val_layer_count = ctx->validationLayersCount;
+
+  bool vl_supported = false;
 
   // we check for the queried validation layers, if need be.
   // if no layers are set to be queried, we just keep going
-  if (NULL != val_layers &&
-      !validation_layers_supported(val_layers,
-                                   ctx->vk_context->validation_layers_count)) {
+  if (NULL != val_layers && 0 < val_layer_count) {
+  }
 
-#ifdef DEBUG
-    fprintf(stderr,
-            "One or more requested instance layers were not available\n");
-#endif
+  if (NULL != val_layers && 0 < val_layer_count) {
+    if (false ==
+        fpx3d_vk_validation_layers_supported(val_layers, val_layer_count)) {
 
-    return VK_ERROR_LAYER_NOT_PRESENT;
+      FPX3D_DEBUG("One or more requested instance layers were not available");
+
+      return FPX3D_VK_BAD_VALIDATION_LAYERS;
+    }
+
+    vl_supported = true;
   }
 #endif
 
-  VkInstanceCreateInfo c_info = {0};
+  VkInstanceCreateInfo inst_info = {0};
 
   glfwInit();
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-  ctx->glfw_window =
-      glfwCreateWindow(ctx->window_dimensions[0], ctx->window_dimensions[1],
-                       ctx->window_title, NULL, NULL);
+  wnd->glfwWindow =
+      glfwCreateWindow(wnd->windowDimensions[0], wnd->windowDimensions[1],
+                       wnd->windowTitle, NULL, NULL);
 
-  glfwSetWindowUserPointer(ctx->glfw_window, ctx);
-  glfwSetFramebufferSizeCallback(ctx->glfw_window, glfw_resize_callback);
+  if (NULL == wnd->glfwWindow) {
+    return FPX3D_WND_WINDOW_CREATE_ERROR;
+  }
 
-  c_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  c_info.pApplicationInfo = &ctx->vk_context->app_info;
+  inst_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  inst_info.pApplicationInfo = &ctx->appInfo;
 
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
-  if (NULL != val_layers) {
-    c_info.enabledLayerCount = ctx->vk_context->validation_layers_count;
-    c_info.ppEnabledLayerNames = val_layers;
+  if (true == vl_supported) {
+    inst_info.enabledLayerCount = ctx->validationLayersCount;
+    inst_info.ppEnabledLayerNames = val_layers;
   } else {
 #endif
-    c_info.enabledLayerCount = 0;
+    inst_info.enabledLayerCount = 0;
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
   }
 #endif
@@ -211,189 +743,91 @@ int create_vulkan_window(window_context *ctx) {
 
   glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extensions_count);
 
-#ifdef DEBUG
-  fprintf(stderr, "%u extensions supported.\n", glfw_extensions_count);
-#endif
+  FPX3D_DEBUG("%u extensions supported.", glfw_extensions_count);
 
-  c_info.enabledExtensionCount = glfw_extensions_count;
-  c_info.ppEnabledExtensionNames = glfw_extensions;
+  inst_info.enabledExtensionCount = glfw_extensions_count;
+  inst_info.ppEnabledExtensionNames = glfw_extensions;
 
-  VkResult res = vkCreateInstance(&c_info, NULL, &ctx->vk_context->vk_instance);
+  VkResult res = vkCreateInstance(&inst_info, NULL, &ctx->vkInstance);
   if (VK_SUCCESS != res)
-    return res;
+    return FPX3D_VK_INSTANCE_CREATE_ERROR;
 
-  res = glfwCreateWindowSurface(ctx->vk_context->vk_instance, ctx->glfw_window,
-                                NULL, &ctx->vk_context->vk_surface);
+  res = glfwCreateWindowSurface(ctx->vkInstance, ctx->windowContext->glfwWindow,
+                                NULL, &ctx->vkSurface);
 
-  return res;
+  if (VK_SUCCESS != res)
+    return FPX3D_VK_SURFACE_CREATE_ERROR;
+
+  glfwSetWindowUserPointer(ctx->windowContext->glfwWindow, ctx->windowContext);
+  glfwSetWindowSizeCallback(ctx->windowContext->glfwWindow,
+                            _glfw_resize_callback);
+
+  FPX3D_DEBUG("Successfully created Vulkan instance, window and surface");
+
+  return FPX3D_SUCCESS;
 }
 
-static void clean_swapchain(struct logical_gpu_info *lgpu) {
-  struct active_swapchain *sc = &lgpu->current_swapchain;
+Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *ctx,
+                                       void (*destruction_callback)(void *)) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
 
-  if (NULL != sc->frames)
-    for (size_t i = 0; i < sc->frame_count; ++i) {
-      struct swapchain_frame *f = &sc->frames[i];
-      if (VK_NULL_HANDLE != sc->frames[i].framebuffer)
-        vkDestroyFramebuffer(lgpu->gpu, sc->frames[i].framebuffer, NULL);
+  Fpx3d_Wnd_Context *wnd = ctx->windowContext;
 
-      if (VK_NULL_HANDLE != f->view)
-        vkDestroyImageView(lgpu->gpu, f->view, NULL);
+  NULL_CHECK(wnd, FPX3D_VK_BAD_WINDOW_CONTEXT_ERROR);
 
-      if (VK_NULL_HANDLE != f->write_available) {
-        vkDestroySemaphore(lgpu->gpu, f->write_available, NULL);
-      }
-      if (VK_NULL_HANDLE != f->render_finished) {
-        vkDestroySemaphore(lgpu->gpu, f->render_finished, NULL);
-      }
+  if (NULL != destruction_callback)
+    destruction_callback(ctx->customPointer);
+
+  if (NULL != ctx->logicalGpus) {
+    for (size_t i = 0; i < ctx->logicalGpuCapacity; ++i) {
+      _destroy_lgpu(ctx, &ctx->logicalGpus[i]);
     }
 
-  FREE_SAFE(sc->frames);
-  sc->frame_count = 0;
-
-  return;
-}
-
-static void destroy_lgpu(vulkan_context *vk_ctx, size_t lgpu_index) {
-
-  struct indices in = {0};
-  in.logical_gpu = lgpu_index;
-  struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[lgpu_index];
-  struct active_swapchain *sc = &lgpu->current_swapchain;
-
-  vkDeviceWaitIdle(lgpu->gpu);
-
-#ifdef DEBUG
-  fprintf(stderr, "Starting destruction of a logical device\n");
-#endif
-
-  if (NULL != lgpu->command_pools) {
-    for (size_t i = 0; i < lgpu->command_pool_capacity; ++i) {
-      if (VK_NULL_HANDLE != lgpu->command_pools[i].pool)
-        vkDestroyCommandPool(lgpu->gpu, lgpu->command_pools[i].pool, NULL);
-
-      FREE_SAFE(lgpu->command_pools[i].buffers);
-    }
-  }
-  FREE_SAFE(lgpu->command_pools);
-
-  clean_swapchain(lgpu);
-
-  if (VK_NULL_HANDLE != sc->swapchain)
-    vkDestroySwapchainKHR(lgpu->gpu, sc->swapchain, NULL);
-
-#ifdef DEBUG
-  fprintf(stderr, " Swapchain destroyed\n");
-#endif
-
-  if (NULL != lgpu->render_passes)
-    for (size_t i = 0; i < lgpu->render_pass_capacity; ++i) {
-      if (VK_NULL_HANDLE != lgpu->render_passes[i])
-        vkDestroyRenderPass(lgpu->gpu, lgpu->render_passes[i], NULL);
-    }
-
-  FREE_SAFE(lgpu->render_passes);
-
-#ifdef DEBUG
-  fprintf(stderr, " all render passes destroyed\n");
-#endif
-
-  for (size_t i = 0; i < lgpu->pipeline_capacity; ++i) {
-    struct pipeline *p = &lgpu->pipelines[i];
-
-    if (NULL != p->pipeline)
-      vkDestroyPipeline(lgpu->gpu, p->pipeline, NULL);
-
-    if (NULL != p->layout)
-      vkDestroyPipelineLayout(lgpu->gpu, p->layout, NULL);
-    ;
-
-    // XXX: this could definitely cause problems later on, if the shapes are
-    // supposed to be reused. it's probably fine tho? especially since we're
-    // destroying the LGPU in this function anyway
-    for (size_t i = 0; i < p->shape_count; ++i) {
-      free_shape_buffer(vk_ctx, &in, &p->shapes[i]);
-    }
-    FREE_SAFE(p->shapes);
-  }
-  FREE_SAFE(lgpu->pipelines);
-
-#ifdef DEBUG
-  fprintf(stderr, " all pipelines destroyed\n");
-#endif
-
-  if (VK_NULL_HANDLE != lgpu->current_swapchain.aquire_semaphore) {
-    vkDestroySemaphore(lgpu->gpu, lgpu->current_swapchain.aquire_semaphore,
-                       NULL);
+    FREE_SAFE(ctx->logicalGpus);
   }
 
-  // fences
-  if (VK_NULL_HANDLE != sc->in_flight_fence) {
-    vkDestroyFence(lgpu->gpu, sc->in_flight_fence, NULL);
-  }
-
-#ifdef DEBUG
-  fprintf(stderr, " remaining sync objects destroyed\n");
-#endif
-
-  if (VK_NULL_HANDLE != lgpu->gpu) {
-    vkDestroyDevice(lgpu->gpu, NULL);
-#ifdef DEBUG
-    fprintf(stderr, " logical device destroyed\n");
-#endif
-  }
-
-  memset(lgpu, 0, sizeof(*lgpu));
-}
-
-VkResult destroy_vulkan_window(window_context *ctx) {
-  vulkan_context *vk = ctx->vk_context;
-
-  for (size_t i = 0; i < vk->lg_count; ++i) {
-    destroy_lgpu(vk, i);
-  }
-
-  if (NULL != ctx->glfw_window)
-    glfwDestroyWindow(ctx->glfw_window);
+  if (NULL != wnd->glfwWindow)
+    glfwDestroyWindow(wnd->glfwWindow);
 
   glfwTerminate();
 
-  FREE_SAFE(vk->logical_gpus);
+  ctx->logicalGpuCapacity = 0;
 
-  vk->lg_count = 0;
-  vk->lg_capacity = 0;
+  if (VK_NULL_HANDLE != ctx->vkInstance)
+    vkDestroySurfaceKHR(ctx->vkInstance, ctx->vkSurface, NULL);
 
-  if (VK_NULL_HANDLE != vk->vk_instance)
-    vkDestroySurfaceKHR(vk->vk_instance, vk->vk_surface, NULL);
+  if (VK_NULL_HANDLE != ctx->vkSurface)
+    vkDestroyInstance(ctx->vkInstance, NULL);
 
-  if (VK_NULL_HANDLE != vk->vk_surface)
-    vkDestroyInstance(vk->vk_instance, NULL);
+  memset(ctx, 0, sizeof(*ctx));
 
-  memset(vk, 0, sizeof(*vk));
-
-  return VK_SUCCESS;
+  return FPX3D_SUCCESS;
 }
 
-struct scored_gpu {
+struct _scored_gpu {
   VkPhysicalDevice gpu;
   int score;
 };
 
-int choose_vulkan_gpu(vulkan_context *ctx,
-                      int (*scoring_function)(vulkan_context *,
-                                              VkPhysicalDevice)) {
+Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
+                                   int (*scoring_function)(Fpx3d_Vk_Context *,
+                                                           VkPhysicalDevice)) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(scoring_function, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx->vkInstance, FPX3D_VK_BAD_VULKAN_INSTANCE_ERROR);
+
   VkPhysicalDevice *gpus = NULL;
-  struct scored_gpu *scored_gpus = NULL;
+  struct _scored_gpu *scored_gpus = NULL;
 
   uint32_t gpus_available = 0;
 
   {
     int success =
-        vkEnumeratePhysicalDevices(ctx->vk_instance, &gpus_available, NULL);
+        vkEnumeratePhysicalDevices(ctx->vkInstance, &gpus_available, NULL);
 
     if (0 == gpus_available || VK_SUCCESS != success) {
-      fprintf(stderr, "No Vulkan compatible GPU's were found!\n");
-      return -1;
+      FPX3D_DEBUG("No Vulkan compatible GPU's were found!");
+      return FPX3D_VK_NO_VULKAN_GPU_ERROR;
     }
   }
 
@@ -402,29 +836,35 @@ int choose_vulkan_gpu(vulkan_context *ctx,
     gpus = (VkPhysicalDevice *)calloc(gpus_available, sizeof(VkPhysicalDevice));
     if (NULL == gpus) {
       perror("calloc()");
-      return -2;
+      return FPX3D_MEMORY_ERROR;
     }
 
-    scored_gpus =
-        (struct scored_gpu *)calloc(gpus_available, sizeof(struct scored_gpu));
+    scored_gpus = (struct _scored_gpu *)calloc(gpus_available,
+                                               sizeof(struct _scored_gpu));
     if (NULL == scored_gpus) {
       perror("calloc()");
       FREE_SAFE(gpus);
-      return -2;
+      return FPX3D_MEMORY_ERROR;
     }
   }
 
-  vkEnumeratePhysicalDevices(ctx->vk_instance, &gpus_available, gpus);
+  vkEnumeratePhysicalDevices(ctx->vkInstance, &gpus_available, gpus);
 
   // auto sort the GPU's based on score, high to low
   for (uint32_t i = 0; i < gpus_available; ++i) {
-    if (ctx->lgpu_extension_count > 0 &&
-        FALSE == device_extensions_supported(gpus[i], ctx->lgpu_extensions,
-                                             ctx->lgpu_extension_count))
+    if (ctx->lgpuExtensionCount > 0 &&
+        false == fpx3d_vk_device_extensions_supported(
+                     gpus[i], ctx->lgpuExtensions, ctx->lgpuExtensionCount))
       continue;
+
+    VkPhysicalDeviceProperties dev_props = {0};
+    vkGetPhysicalDeviceProperties(gpus[i], &dev_props);
+
+    FPX3D_DEBUG("Found GPU #%u - \"%s\"", i, dev_props.deviceName);
 
     int score = scoring_function(ctx, gpus[i]);
 
+    // yipee magic
     for (int j = i; j >= 0; --j) {
       if (scored_gpus[j].score < score && 0 < i)
         memcpy(&scored_gpus[j], &scored_gpus[j + 1], sizeof(*scored_gpus));
@@ -438,282 +878,211 @@ int choose_vulkan_gpu(vulkan_context *ctx,
 
   int retval = 0;
   if (1 > scored_gpus[0].score)
-    retval = -3;
+    retval = FPX3D_VK_NO_SUITABLE_VULKAN_GPU_ERROR;
   else
-    ctx->physical_gpu = scored_gpus[0].gpu;
+    ctx->physicalGpu = scored_gpus[0].gpu;
 
   FREE_SAFE(gpus);
   FREE_SAFE(scored_gpus);
 
+  VkPhysicalDeviceProperties dev_props = {0};
+  vkGetPhysicalDeviceProperties(ctx->physicalGpu, &dev_props);
+
+  FPX3D_DEBUG("Successfully picked a GPU to use");
+  fprintf(stderr,
+          "--------------------------------------------------\n"
+          " Using Vulkan GPU \"%s\"\n"
+          "--------------------------------------------------\n",
+          dev_props.deviceName);
+
   return retval;
 }
 
-static uint8_t qf_meets_requirements(VkQueueFamilyProperties fam,
-                                     struct queue_family_requirements *reqs,
-                                     int qf_index) {
-  union req_union *req = &reqs->reqs;
+Fpx3d_E_Result fpx3d_vk_allocate_logicalgpus(Fpx3d_Vk_Context *ctx,
+                                             size_t amount) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
 
-  // if (fam.queueCount < reqs->minimum_queues)
-  //   return FALSE;
-
-  switch (reqs->type) {
-  case PRESENTATION:
-    if (NULL == req->present.surface)
-      break;
-
-    VkBool32 present_support = false;
-    vkGetPhysicalDeviceSurfaceSupportKHR(
-        req->present.gpu, qf_index, req->present.surface, &present_support);
-
-    if (true == present_support)
-      return TRUE;
-
-    break;
-
-  case TRANSFER_ONLY:
-    if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
-      return FALSE;
-    // else we fall through to case RENDER to see if other things match
-
-  case RENDER:
-    if (req->render.qf_flags == (req->render.qf_flags & fam.queueFlags))
-      return TRUE;
-
-    break;
-
-  default:
-    break;
-  }
-
-  return FALSE;
+  return _realloc_array((void **)&ctx->logicalGpus, sizeof(Fpx3d_Vk_LogicalGpu),
+                        amount, &ctx->logicalGpuCapacity);
 }
 
-struct queue_family_info
-vulkan_queue_family(vulkan_context *ctx,
-                    struct queue_family_requirements *reqs) {
-  struct queue_family_info info = {
-      .index = -1, .family = {0}, .is_valid = FALSE};
-  VkQueueFamilyProperties *props = NULL;
-  uint32_t qf_count = 0;
+Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
+                                             size_t index,
+                                             VkPhysicalDeviceFeatures features,
+                                             size_t g_queues, size_t p_queues,
+                                             size_t t_queues) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx->physicalGpu, FPX3D_VK_BAD_GPU_HANDLE_ERROR);
+  NULL_CHECK(ctx->vkSurface, FPX3D_VK_BAD_VULKAN_INSTANCE_ERROR);
+  NULL_CHECK(ctx->logicalGpus, FPX3D_VK_NULLPTR_ERROR);
 
-  vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_gpu, &qf_count, NULL);
+  if (ctx->logicalGpuCapacity <= index)
+    return FPX3D_NO_CAPACITY_ERROR;
 
-  if (0 == qf_count) {
-    info.index = -1;
-    return info;
+  Fpx3d_Vk_LogicalGpu new_lgpu = {0};
+  uint32_t available_qf_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalGpu,
+                                           &available_qf_count, NULL);
+
+  if (1 > available_qf_count)
+    return FPX3D_VK_ERROR; // TODO: make more specific errors
+
+  Fpx3d_Vk_QueueFamily g_family = {0};
+  Fpx3d_Vk_QueueFamily p_family = {0};
+  Fpx3d_Vk_QueueFamily t_family = {0};
+
+  size_t graphics_transfer_overlap = 0;
+
+  Fpx3d_Vk_QueueFamilyRequirements qf_reqs = {0};
+
+  bool graphics = false, present = false, transfer = false;
+
+  if (0 < t_queues) {
+    // first we see if there are queue families that support TRANSFER but
+    // not COMPUTE/GRAPHICS because if so, we can use a separate queue
+    // family for TRANSFER operations so that we can always use a separate
+    // queue for that
+    qf_reqs.type = TRANSFER_QUEUE;
+    qf_reqs.minimumQueues = t_queues;
+    qf_reqs.graphics.requiredFlags = VK_QUEUE_TRANSFER_BIT;
+    t_family = _choose_queue_family(ctx, &qf_reqs);
+
+    memset(&qf_reqs, 0, sizeof(qf_reqs));
   }
 
-  props = (VkQueueFamilyProperties *)calloc(qf_count,
-                                            sizeof(VkQueueFamilyProperties));
+  if (0 < g_queues) {
+    qf_reqs.type = GRAPHICS_QUEUE;
+    qf_reqs.minimumQueues =
+        CONDITIONAL(0 > t_family.index, MAX(g_queues, t_queues), g_queues);
+    qf_reqs.graphics.requiredFlags = VK_QUEUE_GRAPHICS_BIT;
+    g_family = _choose_queue_family(ctx, &qf_reqs);
 
-  if (NULL == props) {
-    perror("calloc()");
-    info.index = -2;
-    return info;
+    if (0 > t_family.index)
+      graphics_transfer_overlap =
+          (g_queues + t_queues -
+           MIN(g_queues + t_queues, g_family.properties.queueCount));
+
+    memset(&qf_reqs, 0, sizeof(qf_reqs));
+
+    if (0 > g_family.index)
+      return FPX3D_VK_NO_QUEUEFAMILY_ERROR;
   }
 
-  vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_gpu, &qf_count, props);
+  if (0 < p_queues) {
+    qf_reqs.type = PRESENT_QUEUE;
+    qf_reqs.minimumQueues = p_queues;
+    qf_reqs.present.gpu = ctx->physicalGpu;
+    qf_reqs.present.surface = ctx->vkSurface;
+    p_family = _choose_queue_family(ctx, &qf_reqs);
 
-  int64_t best_index = -1;
-  for (int64_t i = 0; i < qf_count; ++i) {
-    if (reqs->index_blacklist_bits & (1 << i))
-      continue;
-
-    VkQueueFamilyProperties *prop = &props[i];
-
-    if (qf_meets_requirements(*prop, reqs, i)) {
-      if (best_index < 0) {
-        best_index = i;
-        continue;
-      }
-
-      if (prop->queueCount > props[best_index].queueCount) {
-        best_index = i;
-      }
-    }
-  }
-
-  info.index = best_index;
-  info.family = props[best_index];
-
-  if (-1 < best_index && info.family.queueCount >= reqs->minimum_queues)
-    info.is_valid = TRUE;
-
-  FREE_SAFE(props);
-
-  return info;
-}
-
-int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
-                           VkPhysicalDeviceFeatures features,
-                           size_t render_queues, size_t presentation_queues,
-                           size_t transfer_queues) {
-  if (ctx->lg_count >= ctx->lg_capacity)
-    return -1;
-
-  int logical_gpu_index = ctx->lg_count;
-  struct logical_gpu_info lgpu = ctx->logical_gpus[logical_gpu_index];
-
-  uint32_t qf_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(ctx->physical_gpu, &qf_count, NULL);
-
-  if (0 == qf_count)
-    return -2;
-
-  struct queue_family_info render_qf = {0};
-  struct queue_family_info presentation_qf = {0};
-  struct queue_family_info transfer_qf = {0};
-
-  uint8_t render = FALSE;
-  uint8_t present = FALSE;
-  uint8_t transfer = FALSE;
-
-  size_t render_transfer_overlap = 0;
-
-  struct queue_family_requirements reqs;
-  memset(&reqs, 0, sizeof(reqs));
-
-  if (0 < transfer_queues) {
-    // first we see if there are queue families that support TRANSFER but not
-    // COMPUTE/GRAPHICS because if so, we can use a separate queue family for
-    // TRANSFER operations so that we can always use a separate queue for that
-    reqs.type = TRANSFER_ONLY;
-    reqs.minimum_queues = transfer_queues;
-    reqs.reqs.render.qf_flags = VK_QUEUE_TRANSFER_BIT;
-    transfer_qf = vulkan_queue_family(ctx, &reqs);
-
-    memset(&reqs, 0, sizeof(reqs));
-  }
-
-  if (0 < render_queues) {
-    reqs.type = RENDER;
-    reqs.minimum_queues =
-        CONDITIONAL(0 > transfer_qf.index, MAX(render_queues, transfer_queues),
-                    render_queues);
-    reqs.reqs.render.qf_flags = VK_QUEUE_GRAPHICS_BIT;
-    render_qf = vulkan_queue_family(ctx, &reqs);
-
-    if (0 > transfer_qf.index)
-      render_transfer_overlap =
-          (render_queues + transfer_queues -
-           MIN(render_queues + transfer_queues, render_qf.family.queueCount));
-
-    memset(&reqs, 0, sizeof(reqs));
-
-    if (0 > render_qf.index)
-      return -3;
-  }
-
-  if (0 < presentation_queues) {
-    reqs.type = PRESENTATION;
-    reqs.minimum_queues = presentation_queues;
-    reqs.reqs.present.gpu = ctx->physical_gpu;
-    reqs.reqs.present.surface = ctx->vk_surface;
-    presentation_qf = vulkan_queue_family(ctx, &reqs);
-
-    if ((render_qf.index == presentation_qf.index) &&
-        (render_queues + presentation_queues > render_qf.family.queueCount)) {
+    if ((g_family.index == p_family.index) &&
+        (g_queues + p_queues > g_family.properties.queueCount)) {
       // reroll presentation_qf
-      reqs.index_blacklist_bits = (1 << render_qf.index);
-      presentation_qf = vulkan_queue_family(ctx, &reqs);
+      qf_reqs.indexBlacklistBits = (1 << g_family.index);
+      p_family = _choose_queue_family(ctx, &qf_reqs);
     }
-
-    if (0 > presentation_qf.index)
-      return -3;
   }
 
-  if (0 > render_qf.index || 0 > presentation_qf.index)
-    return -3;
+  if ((false == g_family.isValid && 0 < g_queues) ||
+      (false == p_family.isValid && 0 < p_queues))
+    return FPX3D_VK_NO_QUEUEFAMILY_ERROR;
 
   VkDeviceQueueCreateInfo infos[8] = {0};
   size_t infos_count = 0;
 
-  lgpu.render_capacity = render_queues;
-  lgpu.render_qf = render_qf.index;
-  lgpu.presentation_capacity = presentation_queues;
-  lgpu.presentation_qf = presentation_qf.index;
-  lgpu.transfer_capacity = transfer_queues;
-  lgpu.transfer_qf =
-      CONDITIONAL(-1 < transfer_qf.index, transfer_qf.index, render_qf.index);
+  size_t highest_queue_count =
+      MAX(g_family.properties.queueCount,
+          MAX(p_family.properties.queueCount, t_family.properties.queueCount));
 
-  // should always be true. i guess we can still check
-  if (-1 < render_qf.index) {
-    ++infos_count;
-
-    VkDeviceQueueCreateInfo *r_info = &infos[infos_count - 1];
-    r_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    r_info->queueFamilyIndex = render_qf.index;
-    r_info->queueCount = render_queues;
-    r_info->pQueuePriorities = &priority;
-
-    if (presentation_qf.index == render_qf.index) {
-      r_info->queueCount += presentation_queues;
-      present = TRUE;
-    }
-
-    render = TRUE;
+  float *priorities = (float *)malloc(highest_queue_count * sizeof(float));
+  if (NULL == priorities) {
+    perror("malloc()");
+    return FPX3D_MEMORY_ERROR;
   }
 
-  if (-1 < presentation_qf.index && render_qf.index != presentation_qf.index) {
-    ++infos_count;
+  for (size_t i = 0; i < highest_queue_count; ++i) {
+    priorities[i] = 1.0f;
+  }
 
-    VkDeviceQueueCreateInfo *p_info = &infos[infos_count - 1];
+  new_lgpu.graphicsQueues.capacity = g_queues;
+  new_lgpu.graphicsQueues.queueFamilyIndex = g_family.index;
+  new_lgpu.presentQueues.capacity = p_queues;
+  new_lgpu.presentQueues.queueFamilyIndex = p_family.index;
+  new_lgpu.transferQueues.capacity = t_queues;
+  new_lgpu.transferQueues.queueFamilyIndex =
+      CONDITIONAL(0 <= t_family.index, t_family.index, g_family.index);
+
+  // should always be true. i guess we can still check
+  if (0 <= g_family.index) {
+    VkDeviceQueueCreateInfo *r_info = &infos[infos_count++];
+    r_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    r_info->queueFamilyIndex = g_family.index;
+    r_info->queueCount = g_queues;
+    r_info->pQueuePriorities = priorities;
+
+    if (p_family.index == g_family.index) {
+      r_info->queueCount += p_queues;
+      present = true;
+    }
+
+    graphics = true;
+  }
+
+  if (0 <= p_family.index && g_family.index != p_family.index) {
+    VkDeviceQueueCreateInfo *p_info = &infos[infos_count++];
     p_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    p_info->queueFamilyIndex = presentation_qf.index;
-    p_info->queueCount = presentation_queues;
-    p_info->pQueuePriorities = &priority;
+    p_info->queueFamilyIndex = p_family.index;
+    p_info->queueCount = p_queues;
+    p_info->pQueuePriorities = priorities;
 
     present = TRUE;
   }
 
-  if (-1 < transfer_qf.index) {
-    ++infos_count;
-
-    VkDeviceQueueCreateInfo *t_info = &infos[infos_count - 1];
+  if (0 <= t_family.index) {
+    VkDeviceQueueCreateInfo *t_info = &infos[infos_count++];
     t_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    t_info->queueFamilyIndex = transfer_qf.index;
-    t_info->queueCount = transfer_queues;
-    t_info->pQueuePriorities = &priority;
+    t_info->queueFamilyIndex = t_family.index;
+    t_info->queueCount = t_queues;
+    t_info->pQueuePriorities = priorities;
 
     transfer = TRUE;
 
-  } else if (0 < transfer_queues &&
-             render_transfer_overlap != transfer_queues) {
-    ++infos_count;
-
-    VkDeviceQueueCreateInfo *t_info = &infos[infos_count - 1];
+  } else if (0 < t_queues && graphics_transfer_overlap != t_queues) {
+    VkDeviceQueueCreateInfo *t_info = &infos[infos_count++];
     t_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    t_info->queueFamilyIndex = render_qf.index;
-    t_info->queueCount = transfer_queues - render_transfer_overlap;
-    t_info->pQueuePriorities = &priority;
+    t_info->queueFamilyIndex = g_family.index;
+    t_info->queueCount = t_queues - graphics_transfer_overlap;
+    t_info->pQueuePriorities = priorities;
 
     transfer = TRUE;
   }
 
-#ifdef DEBUG
-  fprintf(stderr, " Selected queue family %d for rendering (%lu queue%s)\n",
-          lgpu.render_qf, render_queues, (render_queues != 1) ? "s" : "");
+  FPX3D_DEBUG(" Selected queue family %d for rendering (%lu queue%s)",
+              new_lgpu.graphicsQueues.queueFamilyIndex, g_queues,
+              (g_queues != 1) ? "s" : "");
 
-  fprintf(stderr, " Selected queue family %d for presenting (%lu queue%s)\n",
-          lgpu.presentation_qf, presentation_queues,
-          (presentation_queues != 1) ? "s" : "");
+  FPX3D_DEBUG(" Selected queue family %d for presenting (%lu queue%s)",
+              new_lgpu.presentQueues.queueFamilyIndex, p_queues,
+              (p_queues != 1) ? "s" : "");
 
-  fprintf(stderr, " Selected queue family %d for transfering (%lu queue%s)\n",
-          lgpu.transfer_qf, transfer_queues, (transfer_queues != 1) ? "s" : "");
+  FPX3D_DEBUG(" Selected queue family %d for transfering (%lu queue%s)",
+              new_lgpu.transferQueues.queueFamilyIndex, t_queues,
+              (t_queues != 1) ? "s" : "");
 
-  if (render_transfer_overlap > 0)
-    fprintf(stderr,
-            "  (%lu overlapping queue%s between rendering and transfering "
-            "queues)\n",
-            render_transfer_overlap, (render_transfer_overlap != 1) ? "s" : "");
+  if (graphics_transfer_overlap > 0)
+    FPX3D_DEBUG("  (%lu overlapping queue%s between rendering and transfering "
+                "queues)",
+                graphics_transfer_overlap,
+                (graphics_transfer_overlap != 1) ? "s" : "");
 
   for (size_t i = 0; i < infos_count; ++i) {
-    fprintf(stderr, " Requesting %u queues from queue family %u\n",
-            infos[i].queueCount, infos[i].queueFamilyIndex);
+    FPX3D_DEBUG(" Requesting %u queue%s from queue family %u",
+                infos[i].queueCount,
+                CONDITIONAL(infos[i].queueCount != 1, "s", ""),
+                infos[i].queueFamilyIndex);
   }
-#endif
 
-  lgpu.render_transfer_overlap = render_transfer_overlap;
+  new_lgpu.graphicsTransferOverlap = graphics_transfer_overlap;
 
   VkDeviceCreateInfo d_info = {0};
   d_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -721,650 +1090,252 @@ int new_logical_vulkan_gpu(vulkan_context *ctx, float priority,
   d_info.queueCreateInfoCount = infos_count;
   d_info.pEnabledFeatures = &features;
 
-  d_info.enabledExtensionCount = ctx->lgpu_extension_count;
-  d_info.ppEnabledExtensionNames = ctx->lgpu_extensions;
+  d_info.enabledExtensionCount = ctx->lgpuExtensionCount;
+  d_info.ppEnabledExtensionNames = ctx->lgpuExtensions;
 
-// no longer required, but used for
-// compatibility with older impl. of Vulkan
+  // no longer required, but used for
+  // compatibility with older impl. of Vulkan
+#define FPX_VK_USE_VALIDATION_LAYERS
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
-  d_info.enabledLayerCount = ctx->validation_layers_count;
-  d_info.ppEnabledLayerNames = ctx->validation_layers;
+  d_info.enabledLayerCount = ctx->validationLayersCount;
+  d_info.ppEnabledLayerNames = ctx->validationLayers;
 #else
   d_info.enabledLayerCount = 0;
 #endif
 
-  if (FALSE != render && 0 < lgpu.render_capacity) {
-    lgpu.render_queues =
-        (VkQueue *)calloc(lgpu.render_capacity, sizeof(VkQueue));
-    if (NULL == lgpu.render_queues) {
+  if (FALSE != graphics && 0 < new_lgpu.graphicsQueues.capacity) {
+    new_lgpu.graphicsQueues.queues =
+        (VkQueue *)calloc(new_lgpu.graphicsQueues.capacity, sizeof(VkQueue));
+    if (NULL == new_lgpu.graphicsQueues.queues) {
       perror("calloc()");
-      return -4;
+      FREE_SAFE(priorities);
+      return FPX3D_MEMORY_ERROR;
     }
   }
 
-  if (FALSE != present && 0 < lgpu.presentation_capacity) {
-    lgpu.presentation_queues =
-        (VkQueue *)calloc(lgpu.presentation_capacity, sizeof(VkQueue));
-    if (NULL == lgpu.presentation_queues) {
+  if (FALSE != present && 0 < new_lgpu.presentQueues.capacity) {
+    new_lgpu.presentQueues.queues =
+        (VkQueue *)calloc(new_lgpu.presentQueues.capacity, sizeof(VkQueue));
+    if (NULL == new_lgpu.presentQueues.queues) {
       perror("calloc()");
-      FREE_SAFE(lgpu.render_queues);
-      return -4;
+      FREE_SAFE(priorities);
+      FREE_SAFE(new_lgpu.graphicsQueues.queues);
+      return FPX3D_MEMORY_ERROR;
     }
   }
 
-  if ((FALSE != transfer ||
-       (lgpu.render_qf == lgpu.transfer_qf && FALSE != render)) &&
-      0 < lgpu.transfer_capacity) {
-    lgpu.transfer_queues =
-        (VkQueue *)calloc(lgpu.transfer_capacity, sizeof(VkQueue));
-    if (NULL == lgpu.transfer_queues) {
+  if ((FALSE != transfer || (new_lgpu.graphicsQueues.queueFamilyIndex ==
+                                 new_lgpu.transferQueues.queueFamilyIndex &&
+                             FALSE != graphics)) &&
+      0 < new_lgpu.transferQueues.capacity) {
+    new_lgpu.transferQueues.queues =
+        (VkQueue *)calloc(new_lgpu.transferQueues.capacity, sizeof(VkQueue));
+    if (NULL == new_lgpu.transferQueues.queues) {
       perror("calloc()");
-      FREE_SAFE(lgpu.render_queues);
-      FREE_SAFE(lgpu.presentation_queues);
-      return -4;
+      FREE_SAFE(priorities);
+      FREE_SAFE(new_lgpu.graphicsQueues.queues);
+      FREE_SAFE(new_lgpu.presentQueues.queues);
+      return FPX3D_MEMORY_ERROR;
     }
   }
 
-  VkResult res = vkCreateDevice(ctx->physical_gpu, &d_info, NULL, &lgpu.gpu);
+  VkResult res =
+      vkCreateDevice(ctx->physicalGpu, &d_info, NULL, &new_lgpu.handle);
+
+  FREE_SAFE(priorities);
 
   if (VK_SUCCESS != res) {
-#ifdef DEBUG
-    fprintf(stderr, "vkCreateDevice() failed: error code %d\n", res);
-#endif
+    FPX3D_DEBUG("vkCreateDevice() failed: error code %d", res);
 
-    FREE_SAFE(lgpu.render_queues);
-    FREE_SAFE(lgpu.presentation_queues);
-    FREE_SAFE(lgpu.transfer_queues);
+    FREE_SAFE(new_lgpu.graphicsQueues.queues);
+    FREE_SAFE(new_lgpu.presentQueues.queues);
+    FREE_SAFE(new_lgpu.transferQueues.queues);
 
-    return -5;
+    return FPX3D_VK_LGPU_CREATE_ERROR;
   }
 
-  lgpu.features = features;
-  ctx->logical_gpus[ctx->lg_count] = lgpu;
+  new_lgpu.inFlightFences = (VkFence *)malloc(MAX_IN_FLIGHT * sizeof(VkFence));
 
-  return ctx->lg_count++;
-}
+  if (NULL == new_lgpu.inFlightFences) {
+    _destroy_lgpu(ctx, &new_lgpu);
 
-int new_vulkan_queue(vulkan_context *vk_ctx, const struct indices *indices,
-                     enum queue_family_type type) {
-  size_t *capacity = NULL, *count = NULL;
-  VkQueue *queues = NULL;
-  int *qf_index = NULL;
-
-  struct logical_gpu_info *lgpu = &vk_ctx->logical_gpus[indices->logical_gpu];
-
-  switch (type) {
-  case RENDER:
-    capacity = &lgpu->render_capacity;
-    count = &lgpu->render_count;
-    queues = lgpu->render_queues;
-    qf_index = &lgpu->render_qf;
-    break;
-
-  case PRESENTATION:
-    capacity = &lgpu->presentation_capacity;
-    count = &lgpu->presentation_count;
-    queues = lgpu->presentation_queues;
-    qf_index = &lgpu->presentation_qf;
-    break;
-
-  case TRANSFER_ONLY:
-    capacity = &lgpu->transfer_capacity;
-    count = &lgpu->transfer_count;
-    queues = lgpu->transfer_queues;
-    qf_index = &lgpu->transfer_qf;
-    break;
-
-  default:
-    return -1;
+    return FPX3D_MEMORY_ERROR;
   }
 
-  if (*count >= *capacity)
-    return -2;
-
-  vkGetDeviceQueue(lgpu->gpu, *qf_index, *count, &queues[*count]);
-
-  return (*count)++;
-}
-
-static VkSurfaceFormatKHR *surface_format_picker(VkPhysicalDevice dev,
-                                                 VkSurfaceKHR sfc,
-                                                 VkSurfaceFormatKHR *fmts,
-                                                 size_t fmts_count,
-                                                 VkSurfaceFormatKHR *output) {
-  uint32_t formats_available = 0;
-  VkSurfaceFormatKHR *formats = NULL;
-
-  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &formats_available, NULL);
-
-  if (0 == formats_available)
-    return NULL;
-
-  formats = (VkSurfaceFormatKHR *)calloc(formats_available,
-                                         sizeof(VkSurfaceFormatKHR));
-
-  if (NULL == formats) {
-    perror("calloc()");
-    return NULL;
-  }
-
-  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &formats_available, formats);
-
-  if (0 == fmts_count) {
-    *output = formats[0];
-    FREE_SAFE(formats);
-    return output;
-  }
-
-  for (size_t i = 0; i < fmts_count; ++i) {
-    for (uint32_t j = 0; j < formats_available; ++j) {
-      if (fmts[i].format == formats[j].format &&
-          fmts[i].colorSpace == formats[j].colorSpace) {
-        FREE_SAFE(formats);
-        *output = fmts[i];
-        return output;
-      }
-    }
-  }
-
-  FREE_SAFE(formats);
-  return NULL;
-}
-
-static VkPresentModeKHR *present_mode_picker(VkPhysicalDevice dev,
-                                             VkSurfaceKHR sfc,
-                                             VkPresentModeKHR *md,
-                                             size_t md_count,
-                                             VkPresentModeKHR *output) {
-  uint32_t modes_available = 0;
-  VkPresentModeKHR *modes = NULL;
-
-  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_available, NULL);
-
-  if (0 == modes_available)
-    return NULL;
-
-  modes = (VkPresentModeKHR *)calloc(modes_available, sizeof(VkPresentModeKHR));
-
-  if (NULL == modes) {
-    perror("calloc()");
-    return NULL;
-  }
-
-  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_available, modes);
-
-  if (0 == md_count) {
-    *output = modes[0];
-    FREE_SAFE(modes);
-    return output;
-  }
-
-  for (size_t i = 0; i < md_count; ++i) {
-    for (uint32_t j = 0; j < modes_available; ++j) {
-      if (md[i] == modes[j]) {
-        FREE_SAFE(modes);
-        *output = md[i];
-        return output;
-      }
-    }
-  }
-
-  FREE_SAFE(modes);
-  return NULL;
-}
-
-void save_swapchain_requirements(vulkan_context *ctx,
-                                 const struct swapchain_requirements *reqs) {
-  ctx->swapchain_requirements = *reqs;
-
-  return;
-}
-
-struct swapchain_details swapchain_compatibility(vulkan_context *ctx,
-                                                 VkPhysicalDevice dev) {
-  struct swapchain_details details = {0};
-  struct swapchain_requirements *reqs = &ctx->swapchain_requirements;
-
-  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, ctx->vk_surface,
-                                            &details.surface_capabilities);
-
-  const char *ext = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-  if (FALSE == device_extensions_supported(dev, &ext, 1)) {
-    return details;
-  }
-
-  details.swapchains_available = TRUE;
-
-  if (reqs->surface_formats_count > 0) {
-    VkSurfaceFormatKHR fmt;
-    VkSurfaceFormatKHR *output =
-        surface_format_picker(dev, ctx->vk_surface, reqs->surface_formats,
-                              reqs->surface_formats_count, &fmt);
-
-    if (NULL != output) {
-      details.surface_format = fmt;
-      details.surface_format_valid = TRUE;
-    }
-  } else
-    details.surface_format_valid = TRUE;
-
-  if (reqs->present_modes_count > 0) {
-    VkPresentModeKHR md;
-    VkPresentModeKHR *output =
-        present_mode_picker(dev, ctx->vk_surface, reqs->present_modes,
-                            reqs->present_modes_count, &md);
-
-    if (NULL != output) {
-      details.present_mode = md;
-      details.present_mode_valid = TRUE;
-    }
-  } else
-    details.present_mode_valid = TRUE;
-
-  return details;
-}
-
-static VkExtent2D
-swapchain_extent(window_context *ctx,
-                 const VkSurfaceCapabilitiesKHR *capabilities) {
-  if (capabilities->currentExtent.width != UINT32_MAX)
-    return capabilities->currentExtent;
-
-  VkExtent2D retval = {0};
-  int width, height;
-
-  glfwGetFramebufferSize(ctx->glfw_window, &width, &height);
-
-  retval.height = CLAMP((uint32_t)height, capabilities->minImageExtent.height,
-                        capabilities->maxImageExtent.height);
-  retval.width = CLAMP((uint32_t)width, capabilities->minImageExtent.width,
-                       capabilities->maxImageExtent.width);
-
-  return retval;
-}
-
-int create_vulkan_swap_chain(window_context *ctx,
-                             const struct swapchain_details *details,
-                             const struct indices *indices) {
-  if (!(details->surface_format_valid && details->present_mode_valid))
-    return -1;
-
-  const VkSurfaceCapabilitiesKHR *cap = &details->surface_capabilities;
-
-  VkSwapchainCreateInfoKHR s_info = {0};
-  VkExtent2D extent = swapchain_extent(ctx, cap);
-
-  struct logical_gpu_info *lgpu =
-      &ctx->vk_context->logical_gpus[indices->logical_gpu];
-  struct active_swapchain *current_chain = &lgpu->current_swapchain;
-
-  VkSwapchainKHR old_swapchain = current_chain->swapchain;
-
-  uint32_t qf_indices[2] = {lgpu->render_qf, lgpu->presentation_qf};
-
-  {
-    uint32_t image_count = cap->minImageCount + 1;
-    if (cap->maxImageCount > 0 && image_count > cap->maxImageCount)
-      image_count = cap->maxImageCount;
-
-    s_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    s_info.surface = ctx->vk_context->vk_surface;
-
-    s_info.minImageCount = image_count;
-
-    s_info.imageFormat = details->surface_format.format;
-    s_info.imageColorSpace = details->surface_format.colorSpace;
-
-    s_info.imageExtent = extent;
-    s_info.imageArrayLayers = 1;
-    s_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-    if (lgpu->render_qf != lgpu->presentation_qf) {
-      s_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-      s_info.queueFamilyIndexCount = 2;
-      s_info.pQueueFamilyIndices = qf_indices;
-    } else {
-      s_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-      s_info.queueFamilyIndexCount = 0;
-      s_info.pQueueFamilyIndices = NULL;
-    }
-
-    s_info.preTransform = cap->currentTransform;
-    s_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    s_info.presentMode = details->present_mode;
-    s_info.clipped = VK_TRUE;
-
-    s_info.oldSwapchain = old_swapchain;
-  }
-
-  VkSwapchainKHR new_swapchain = {0};
-
-  VkResult success =
-      vkCreateSwapchainKHR(lgpu->gpu, &s_info, NULL, &new_swapchain);
-
-  if (VK_SUCCESS != success) {
-#ifdef DEBUG
-    fprintf(stderr, "Error while creating swapchain. Code: %d.\n", success);
-#endif
-    return -2;
-  }
-
-  uint32_t frame_count = 0;
-  VkImage *images = NULL;
-  vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &frame_count, NULL);
-
-  images = (VkImage *)calloc(frame_count, sizeof(VkImage));
-  if (NULL == images) {
-    perror("calloc()");
-
-    vkDestroySwapchainKHR(lgpu->gpu, new_swapchain, NULL);
-
-    current_chain->swapchain = VK_NULL_HANDLE;
-
-    return -3;
-  }
-
-  VkImageView *views = (VkImageView *)calloc(frame_count, sizeof(VkImageView));
-
-  if (NULL == views) {
-    perror("calloc()");
-
-    vkDestroySwapchainKHR(lgpu->gpu, new_swapchain, NULL);
-
-    current_chain->swapchain = VK_NULL_HANDLE;
-
-    FREE_SAFE(images);
-    return -3;
-  }
-
-  vkGetSwapchainImagesKHR(lgpu->gpu, new_swapchain, &frame_count, images);
-
-  for (uint32_t i = 0; i < frame_count; ++i) {
-    VkImageViewCreateInfo v_info = {0};
-
-    v_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    v_info.image = images[i];
-    v_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    v_info.format = details->surface_format.format;
-
-    v_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-    v_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-    v_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-    v_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-    v_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    v_info.subresourceRange.baseMipLevel = 0;
-    v_info.subresourceRange.levelCount = 1;
-    v_info.subresourceRange.baseArrayLayer = 0;
-    v_info.subresourceRange.layerCount = 1;
-
-    VkResult success = vkCreateImageView(lgpu->gpu, &v_info, NULL, &views[i]);
-
-    if (VK_SUCCESS != success) {
-      fprintf(stderr, "Error while setting up Vulkan swap chain. Code: %d.\n",
-              success);
-      return -4;
-    }
-  }
-
-  if (0 != current_chain->frame_count) {
-    FREE_SAFE(current_chain->frames);
-  }
-
-  struct swapchain_frame *frames = (struct swapchain_frame *)calloc(
-      frame_count, sizeof(struct swapchain_frame));
-  if (NULL == frames) {
-    perror("calloc()");
-
-    FREE_SAFE(images);
-    FREE_SAFE(views);
-
-    return -3;
-  }
-
-  VkSemaphore sema = VK_NULL_HANDLE;
-
-  {
-    VkSemaphoreCreateInfo sema_info = {0};
-    sema_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    for (uint32_t i = 0; i < frame_count; ++i) {
-      if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL,
-                                          &frames[i].write_available) ||
-          VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL,
-                                          &frames[i].render_finished)) {
-        FREE_SAFE(images);
-        FREE_SAFE(views);
-        FREE_SAFE(frames);
-
-        return -5;
-      }
-
-      frames[i].image = images[i];
-      frames[i].view = views[i];
-    }
-
-    if (VK_NULL_HANDLE == lgpu->current_swapchain.aquire_semaphore) {
-      if (VK_SUCCESS != vkCreateSemaphore(lgpu->gpu, &sema_info, NULL, &sema)) {
-        FREE_SAFE(images);
-        FREE_SAFE(views);
-        FREE_SAFE(frames);
-
-        return -5;
-      }
-
-      current_chain->aquire_semaphore = sema;
-    }
+  VkFenceCreateInfo f_info = {
+      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+      .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+  };
+
+  if (FPX3D_SUCCESS != _construct_command_pool(&new_lgpu,
+                                               &new_lgpu.inFlightCommandPool,
+                                               GRAPHICS_POOL)) {
+    _destroy_lgpu(ctx, &new_lgpu);
+    return FPX3D_VK_ERROR;
   }
 
   {
-    VkFenceCreateInfo fence_info = {0};
-    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    new_lgpu.inFlightCommandPool.buffers =
+        (VkCommandBuffer *)calloc(MAX_IN_FLIGHT, sizeof(VkCommandBuffer));
 
-    VkFence fence = current_chain->in_flight_fence;
+    if (NULL == new_lgpu.inFlightCommandPool.buffers) {
+      perror("calloc()");
 
-    if (VK_NULL_HANDLE == current_chain->in_flight_fence)
-      if (VK_SUCCESS != vkCreateFence(lgpu->gpu, &fence_info, NULL, &fence)) {
-        FREE_SAFE(images);
-        FREE_SAFE(views);
-        FREE_SAFE(frames);
+      _destroy_lgpu(ctx, &new_lgpu);
+      return FPX3D_MEMORY_ERROR;
+    }
 
-        return -5;
-      }
+    VkCommandBufferAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = new_lgpu.inFlightCommandPool.pool;
+    alloc_info.commandBufferCount = MAX_IN_FLIGHT;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 
-    current_chain->in_flight_fence = fence;
+    if (VK_SUCCESS !=
+        vkAllocateCommandBuffers(new_lgpu.handle, &alloc_info,
+                                 new_lgpu.inFlightCommandPool.buffers)) {
+      _destroy_lgpu(ctx, &new_lgpu);
+    }
+
+    new_lgpu.inFlightCommandPool.bufferCount = MAX_IN_FLIGHT;
   }
 
-  if (VK_NULL_HANDLE != old_swapchain)
-    vkDestroySwapchainKHR(lgpu->gpu, old_swapchain, NULL);
+  for (size_t i = 0; i < MAX_IN_FLIGHT; ++i) {
+    if (VK_SUCCESS != vkCreateFence(new_lgpu.handle, &f_info, NULL,
+                                    &new_lgpu.inFlightFences[i])) {
+      _destroy_lgpu(ctx, &new_lgpu);
+      return FPX3D_VK_ERROR;
+    }
+  }
 
-  current_chain->image_format = details->surface_format.format;
-  current_chain->swapchain = new_swapchain;
-  current_chain->swapchain_extent = extent;
-  current_chain->frames = frames;
-  current_chain->frame_count = frame_count;
+  new_lgpu.features = features;
+  ctx->logicalGpus[index] = new_lgpu;
 
-  return VK_SUCCESS;
+  return FPX3D_SUCCESS;
 }
 
-int refresh_vulkan_swap_chain(window_context *w_ctx,
-                              const struct swapchain_details *details,
-                              const struct indices *indices) {
-  struct logical_gpu_info *lgpu =
-      &w_ctx->vk_context->logical_gpus[indices->logical_gpu];
+Fpx3d_Vk_LogicalGpu *fpx3d_vk_get_logicalgpu_at(Fpx3d_Vk_Context *ctx,
+                                                size_t index) {
+  NULL_CHECK(ctx, NULL);
+  NULL_CHECK(ctx->logicalGpus, NULL);
 
-  int width = 0, height = 0;
-  glfwGetFramebufferSize(w_ctx->glfw_window, &width, &height);
+  if (ctx->logicalGpuCapacity <= index)
+    return NULL;
 
-  // if the window is currently minimized; pause until it is re-opened
-  while (0 == width || 0 == height) {
-    glfwGetFramebufferSize(w_ctx->glfw_window, &width, &height);
-    glfwWaitEvents();
-  }
-
-  // first we clean it up
-  vkDeviceWaitIdle(lgpu->gpu);
-  clean_swapchain(lgpu);
-
-  // then we recreate it
-  create_vulkan_swap_chain(w_ctx, details, indices);
-  create_framebuffers(w_ctx->vk_context, indices);
-
-  return 0;
+  return &ctx->logicalGpus[index];
 }
 
-struct spirv_file read_spirv(const char *filename, enum shader_stage stage) {
-  struct spirv_file file = {0};
+Fpx3d_E_Result fpx3d_vk_destroy_logicalgpu_at(Fpx3d_Vk_Context *ctx,
+                                              size_t index) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx->logicalGpus, FPX3D_VK_NULLPTR_ERROR);
 
-  FILE *fp = fopen(filename, "r");
-  if (NULL == fp) {
-    perror("fopen()");
-    return file;
-  }
+  if (ctx->logicalGpuCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
 
-  if (0 > fseek(fp, 0, SEEK_END)) {
-    perror("fseek()");
-    fclose(fp);
-    return file;
-  }
+  LGPU_CHECK(&ctx->logicalGpus[index], FPX3D_VK_LGPU_INVALID_ERROR);
 
-  int size = ftell(fp);
-  if (0 > size) {
-    perror("ftell()");
-    fclose(fp);
-    return file;
-  }
+  _destroy_lgpu(ctx, &ctx->logicalGpus[index]);
 
-  if (4 > size)
-    return file;
-
-  rewind(fp);
-
-  uint32_t magic = 0;
-  fread(&magic, sizeof(uint32_t), 1, fp);
-  if (0x07230203 != magic) {
-    // bad file format (probably)
-    // also add more checking, bcs this isn't good enough lol
-    return file;
-  }
-
-  rewind(fp);
-
-#ifdef DEBUG
-  fprintf(stderr, "Read %d bytes from file \"%s\"\n", size, filename);
-#endif
-
-  // align to 4 bytes (sizeof uint32_t) because the shader module reads it using
-  // a uint32_t pointer for some reason
-  file.buffer =
-      (uint8_t *)malloc(size + (sizeof(uint32_t) - (size % sizeof(uint32_t))));
-  if (NULL == file.buffer) {
-    perror("malloc()");
-    fclose(fp);
-    return file;
-  }
-
-  if (size > (int)fread(file.buffer, 1, size, fp)) {
-#ifdef DEBUG
-    fprintf(stderr, "Read too little from SPIR-V file\n");
-#endif
-    FREE_SAFE(file.buffer);
-    fclose(fp);
-    return file;
-  }
-
-  file.filesize = size;
-  file.stage = stage;
-
-  fclose(fp);
-
-  return file;
+  return FPX3D_SUCCESS;
 }
 
-void free_spirv_file(struct spirv_file *spirv) {
-  FREE_SAFE(spirv->buffer);
-  memset(spirv, 0, sizeof(*spirv));
-}
+Fpx3d_E_Result fpx3d_vk_create_queues(Fpx3d_Vk_LogicalGpu *lgpu,
+                                      Fpx3d_Vk_E_QueueType q_type,
+                                      size_t count) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
-static VkShaderModule *select_module_stage(struct shader_set *set,
-                                           enum shader_stage stage) {
+  struct fpx3d_vulkan_queues *queues = _get_queues_ptr_by_type(lgpu, q_type);
 
-  VkShaderModule *module = NULL;
+  NULL_CHECK(queues, FPX3D_VK_QUEUE_CREATE_ERROR);
 
-  switch (stage) {
-  // case INPUT:
-  //   module = &set->input;
-  //   break;
-  case VERTEX:
-    module = &set->vertex;
-    break;
-  case TESSELATION_CONTROL:
-    module = &set->tesselation_control;
-    break;
-  case TESSELATION_EVALUATION:
-    module = &set->tesselation_evaluation;
-    break;
-  case GEOMETRY:
-    module = &set->geometry;
-    break;
-  // case RASTERIZATION:
-  //   module = &set->rasterization;
-  //   break;
-  case FRAGMENT:
-    module = &set->fragment;
-    break;
-    // case BLENDING:
-    //   module = &set->blending;
-    //   break;
+  if (queues->capacity < count + queues->count)
+    return FPX3D_NO_CAPACITY_ERROR;
 
-  default:
-    // error
-    break;
+  for (size_t i = queues->count; i < queues->count + count; ++i) {
+    vkGetDeviceQueue(lgpu->handle, queues->queueFamilyIndex, i,
+                     &queues->queues[i]);
   }
 
-  return module;
+  queues->count += count;
+
+  return FPX3D_SUCCESS;
 }
 
-int fill_shader_module(vulkan_context *ctx, const struct indices *indices,
-                       const struct spirv_file spirv, struct shader_set *set) {
-  VkShaderModule *module = NULL;
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+Fpx3d_E_Result fpx3d_vk_create_all_available_queues(Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  module = select_module_stage(set, spirv.stage);
+  if (0 < (lgpu->graphicsQueues.capacity - lgpu->graphicsQueues.count)) {
+    if (FPX3D_SUCCESS != fpx3d_vk_create_queues(lgpu, GRAPHICS_QUEUE,
+                                                lgpu->graphicsQueues.capacity -
+                                                    lgpu->graphicsQueues.count))
+      return FPX3D_VK_QUEUE_CREATE_ERROR;
+  }
 
-  if (NULL == module)
-    return -1;
+  if (0 < (lgpu->presentQueues.capacity - lgpu->presentQueues.count)) {
+    if (FPX3D_SUCCESS != fpx3d_vk_create_queues(lgpu, PRESENT_QUEUE,
+                                                lgpu->presentQueues.capacity -
+                                                    lgpu->presentQueues.count))
+      return FPX3D_VK_QUEUE_CREATE_ERROR;
+  }
 
-  VkShaderModuleCreateInfo m_info = {0};
+  if (0 < (lgpu->transferQueues.capacity - lgpu->transferQueues.count)) {
+    if (FPX3D_SUCCESS != fpx3d_vk_create_queues(lgpu, TRANSFER_QUEUE,
+                                                lgpu->transferQueues.capacity -
+                                                    lgpu->transferQueues.count))
+      return FPX3D_VK_QUEUE_CREATE_ERROR;
+  }
 
-  VkShaderModule temp = {0};
-
-  m_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-  m_info.codeSize = spirv.filesize;
-  m_info.pCode = (uint32_t *)spirv.buffer;
-
-  int success = vkCreateShaderModule(lgpu->gpu, &m_info, NULL, &temp);
-
-  if (VK_SUCCESS != success)
-    return -2;
-
-  *module = temp;
-
-  return VK_SUCCESS;
+  return FPX3D_SUCCESS;
 }
 
-VkRenderPass create_render_pass(vulkan_context *ctx,
-                                const struct indices *indices) {
+VkQueue *fpx3d_vk_get_queue_at(Fpx3d_Vk_LogicalGpu *lgpu, size_t index,
+                               Fpx3d_Vk_E_QueueType q_type) {
+  NULL_CHECK(lgpu, NULL);
+  LGPU_CHECK(lgpu, NULL);
+
+  struct fpx3d_vulkan_queues *queues = _get_queues_ptr_by_type(lgpu, q_type);
+
+  NULL_CHECK(queues, NULL);
+
+  if (queues->count <= index)
+    return NULL;
+
+  return &queues->queues[index];
+}
+
+Fpx3d_E_Result fpx3d_vk_allocate_renderpasses(Fpx3d_Vk_LogicalGpu *lgpu,
+                                              size_t count) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+
+  return _realloc_array((void **)&lgpu->renderPasses, sizeof(VkRenderPass),
+                        count, &lgpu->renderPassCapacity);
+}
+
+Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                             size_t index) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->renderPasses, FPX3D_VK_NULLPTR_ERROR);
+
+  if (lgpu->renderPassCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  if (VK_FORMAT_UNDEFINED == lgpu->currentSwapchain.imageFormat) {
+    return FPX3D_VK_ERROR;
+  }
+
   // TODO: make modular. currently hardcoded to follow tutorial
   // maybe have the programmer pass an array of color attachments,
   // or maybe subpasses
 
   VkRenderPass pass = VK_NULL_HANDLE;
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
 
   VkAttachmentDescription color_attachment = {0};
-  color_attachment.format = lgpu->current_swapchain.image_format;
+  color_attachment.format = lgpu->currentSwapchain.imageFormat;
   color_attachment.samples = VK_SAMPLE_COUNT_1_BIT; // TODO: multisampling
 
   color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1406,138 +1377,1106 @@ VkRenderPass create_render_pass(vulkan_context *ctx,
   r_info.pDependencies = &s_dep;
 
   {
-    int success = vkCreateRenderPass(
-        ctx->logical_gpus[indices->logical_gpu].gpu, &r_info, NULL, &pass);
+    int success = vkCreateRenderPass(lgpu->handle, &r_info, NULL, &pass);
 
     if (VK_SUCCESS != success) {
-      return VK_NULL_HANDLE;
+      return FPX3D_VK_ERROR;
     }
   }
 
-  return pass;
+  if (VK_NULL_HANDLE != lgpu->renderPasses[index])
+    vkDestroyRenderPass(lgpu->handle, lgpu->renderPasses[index], NULL);
+
+  lgpu->renderPasses[index] = pass;
+
+  return FPX3D_SUCCESS;
 }
 
-int allocate_render_passes(vulkan_context *ctx, const struct indices *indices,
-                           size_t amount) {
-  if (1 > amount)
-    return -1;
+VkRenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                         size_t index) {
+  NULL_CHECK(lgpu, NULL);
+  NULL_CHECK(lgpu->renderPasses, NULL);
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+  if (lgpu->renderPassCapacity <= index)
+    return NULL;
 
-  lgpu->render_passes = (VkRenderPass *)realloc(lgpu->render_passes,
-                                                amount * sizeof(VkRenderPass));
+  return &lgpu->renderPasses[index];
+}
 
-  if (NULL == lgpu->render_passes) {
-    perror("realloc()");
-    return -2;
+Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                              size_t index) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->renderPasses, FPX3D_VK_NULLPTR_ERROR);
+
+  if (lgpu->renderPassCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  vkDestroyRenderPass(lgpu->handle, lgpu->renderPasses[index], NULL);
+
+  lgpu->renderPasses[index] = VK_NULL_HANDLE;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
+                                         Fpx3d_Vk_LogicalGpu *lgpu,
+                                         Fpx3d_Vk_SwapchainProperties props) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+  NULL_CHECK(ctx->vkSurface, FPX3D_VK_BAD_VULKAN_SURFACE_ERROR);
+  NULL_CHECK(ctx->windowContext, FPX3D_VK_BAD_WINDOW_CONTEXT_ERROR);
+
+  NULL_CHECK(lgpu->graphicsQueues.queues, FPX3D_NO_CAPACITY_ERROR);
+  NULL_CHECK(lgpu->presentQueues.queues, FPX3D_NO_CAPACITY_ERROR);
+
+  if (0 == lgpu->graphicsQueues.capacity || 0 == lgpu->graphicsQueues.capacity)
+    return FPX3D_NO_CAPACITY_ERROR;
+
+  if (false == props.presentModeValid || false == props.surfaceFormatValid)
+    return FPX3D_VK_INVALID_SWAPCHAIN_PROPERTIES_ERROR;
+
+  const VkSurfaceCapabilitiesKHR cap = props.surfaceCapabilities;
+
+  VkSwapchainCreateInfoKHR s_info = {0};
+  VkExtent2D extent = _new_swapchain_extent(ctx->windowContext, cap);
+
+  uint32_t qf_indices[2] = {lgpu->graphicsQueues.queueFamilyIndex,
+                            lgpu->presentQueues.queueFamilyIndex};
+
+  {
+    uint32_t image_count = cap.minImageCount + 1;
+    if (cap.maxImageCount > 0 && image_count > cap.maxImageCount)
+      image_count = cap.maxImageCount;
+
+    s_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    s_info.surface = ctx->vkSurface;
+
+    s_info.minImageCount = image_count;
+
+    s_info.imageFormat = props.surfaceFormat.format;
+    s_info.imageColorSpace = props.surfaceFormat.colorSpace;
+
+    s_info.imageExtent = extent;
+    s_info.imageArrayLayers = 1;
+    s_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+    if (lgpu->graphicsQueues.queueFamilyIndex !=
+        lgpu->presentQueues.queueFamilyIndex) {
+      s_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+      s_info.queueFamilyIndexCount = 2;
+      s_info.pQueueFamilyIndices = qf_indices;
+    } else {
+      s_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      s_info.queueFamilyIndexCount = 0;
+      s_info.pQueueFamilyIndices = NULL;
+    }
+
+    s_info.preTransform = cap.currentTransform;
+    s_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    s_info.presentMode = props.presentMode;
+    s_info.clipped = VK_TRUE;
+
+    s_info.oldSwapchain = lgpu->currentSwapchain.swapchain;
   }
 
-  if (lgpu->render_pass_capacity < amount)
-    memset(&lgpu->render_passes[lgpu->render_pass_capacity], 0,
-           sizeof(lgpu->render_passes[0]) *
-               (amount - lgpu->render_pass_capacity));
+  VkSwapchainKHR new_swapchain = {0};
 
-  lgpu->render_pass_capacity = amount;
+  VkResult success =
+      vkCreateSwapchainKHR(lgpu->handle, &s_info, NULL, &new_swapchain);
 
-  return 0;
-}
+  // whatever happens here, if there was an old_swapchain, it is now
+  // retired.
+  if (VK_NULL_HANDLE != lgpu->currentSwapchain.swapchain)
+    if (FPX3D_SUCCESS != _retire_current_swapchain(lgpu)) {
+      _destroy_swapchain(lgpu, &lgpu->currentSwapchain, true);
+      return FPX3D_VK_ERROR;
+    }
 
-int add_render_pass(vulkan_context *ctx, const struct indices *indices,
-                    VkRenderPass pass) {
-  ctx->logical_gpus[indices->logical_gpu].render_passes[indices->render_pass] =
-      pass;
-
-  return 0;
-}
-
-int init_vertices_struct(struct vertex_bundle *vertices) {
-  memset(vertices, 0, sizeof(*vertices));
-
-  return 0;
-}
-
-int allocate_vertices(struct vertex_bundle *vertices, size_t amount) {
-  if (1 > amount) {
-    FREE_SAFE(vertices->vertices);
-    return 0;
+  if (VK_SUCCESS != success) {
+    FPX3D_DEBUG("Error while creating a new swapchain. Code: %d.", success);
+    return FPX3D_VK_SWAPCHAIN_CREATE_ERROR;
   }
 
-  if (vertices->vertex_capacity == amount)
-    return -1;
+  uint32_t frame_count = 0;
+  VkImage *images = NULL;
+  vkGetSwapchainImagesKHR(lgpu->handle, new_swapchain, &frame_count, NULL);
 
-  struct vertex *new_verts = (struct vertex *)realloc(
-      vertices->vertices, amount * sizeof(struct vertex));
-  if (NULL == new_verts) {
-    perror("realloc()");
-    return -2;
+  images = (VkImage *)calloc(frame_count, sizeof(VkImage));
+  if (NULL == images) {
+    perror("calloc()");
+
+    vkDestroySwapchainKHR(lgpu->handle, new_swapchain, NULL);
+
+    return FPX3D_MEMORY_ERROR;
   }
 
-  if (vertices->vertex_capacity < amount)
-    memset(&new_verts[vertices->vertex_capacity], 0,
-           sizeof(*new_verts) * (amount - vertices->vertex_capacity));
+  VkImageView *views = (VkImageView *)calloc(frame_count, sizeof(VkImageView));
 
-  vertices->vertices = new_verts;
-  vertices->vertex_capacity = amount;
+  if (NULL == views) {
+    perror("calloc()");
 
-  return 0;
-}
+    vkDestroySwapchainKHR(lgpu->handle, new_swapchain, NULL);
 
-void free_vertices(struct vertex_bundle *v) {
-  FREE_SAFE(v->vertices);
-  FREE_SAFE(v->indices);
-
-  memset(v, 0, sizeof(*v));
-
-  return;
-}
-
-int append_vertex(struct vertex_bundle *vertices, struct vertex v) {
-  if (vertices->vertex_count == vertices->vertex_capacity)
-    return -1;
-
-  vertices->vertices[vertices->vertex_count] = v;
-
-  return (vertices->vertex_count++);
-}
-
-int allocate_pipelines(vulkan_context *ctx, const struct indices *indices,
-                       size_t amount) {
-  if (1 > amount)
-    return -1;
-
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-
-  lgpu->pipelines = (struct pipeline *)realloc(
-      lgpu->pipelines, amount * sizeof(struct pipeline));
-
-  if (NULL == lgpu->pipelines) {
-    perror("realloc()");
-    return -2;
+    FREE_SAFE(images);
+    return FPX3D_MEMORY_ERROR;
   }
 
-  if (lgpu->pipeline_capacity < amount)
-    memset(&lgpu->pipelines[lgpu->pipeline_capacity], 0,
-           sizeof(lgpu->pipelines[0]) * (amount - lgpu->pipeline_capacity));
+  vkGetSwapchainImagesKHR(lgpu->handle, new_swapchain, &frame_count, images);
 
-  lgpu->pipeline_capacity = amount;
+#define DEINITIALIZE_SWAPCHAIN                                                 \
+  for (size_t _iter = 0; _iter < frame_count; ++_iter) {                       \
+    if (VK_NULL_HANDLE != views[_iter])                                        \
+      vkDestroyImageView(lgpu->handle, views[_iter], NULL);                    \
+    FREE_SAFE(images[_iter]);                                                  \
+    FREE_SAFE(views[_iter]);                                                   \
+    vkDestroySwapchainKHR(lgpu->handle, new_swapchain, NULL);                  \
+  }
 
-  return 0;
+  for (uint32_t i = 0; i < frame_count; ++i) {
+    VkImageViewCreateInfo v_info = {0};
+
+    v_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    v_info.image = images[i];
+    v_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    v_info.format = props.surfaceFormat.format;
+
+    v_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    v_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    v_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    v_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+    v_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    v_info.subresourceRange.baseMipLevel = 0;
+    v_info.subresourceRange.levelCount = 1;
+    v_info.subresourceRange.baseArrayLayer = 0;
+    v_info.subresourceRange.layerCount = 1;
+
+    VkResult success =
+        vkCreateImageView(lgpu->handle, &v_info, NULL, &views[i]);
+
+    if (VK_SUCCESS != success) {
+      FPX3D_ERROR("Error while setting up Vulkan swap chain. Code: %d.",
+                  success);
+
+      DEINITIALIZE_SWAPCHAIN;
+
+      return FPX3D_VK_ERROR;
+    }
+  }
+
+  Fpx3d_Vk_SwapchainFrame *frames = (Fpx3d_Vk_SwapchainFrame *)calloc(
+      frame_count, sizeof(Fpx3d_Vk_SwapchainFrame));
+  if (NULL == frames) {
+    perror("calloc()");
+
+    DEINITIALIZE_SWAPCHAIN;
+
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  {
+    VkSemaphoreCreateInfo sema_info = {0};
+    sema_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo f_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                                .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+
+    for (uint32_t i = 0; i < frame_count; ++i) {
+      if (VK_SUCCESS != vkCreateSemaphore(lgpu->handle, &sema_info, NULL,
+                                          &frames[i].writeAvailable) ||
+          VK_SUCCESS != vkCreateSemaphore(lgpu->handle, &sema_info, NULL,
+                                          &frames[i].renderFinished)) {
+
+        if (VK_NULL_HANDLE == frames[i].writeAvailable)
+          vkDestroySemaphore(lgpu->handle, frames[i].writeAvailable, NULL);
+
+        if (VK_NULL_HANDLE == frames[i].renderFinished)
+          vkDestroySemaphore(lgpu->handle, frames[i].renderFinished, NULL);
+
+        FREE_SAFE(frames);
+
+        DEINITIALIZE_SWAPCHAIN;
+
+        return FPX3D_VK_ERROR;
+      }
+
+      vkCreateFence(lgpu->handle, &f_info, NULL, &frames[i].idleFence);
+
+      frames[i].image = images[i];
+      frames[i].view = views[i];
+    }
+
+    VkSemaphore sema = VK_NULL_HANDLE;
+
+    if (VK_NULL_HANDLE == lgpu->currentSwapchain.acquireSemaphore) {
+      if (VK_SUCCESS !=
+          vkCreateSemaphore(lgpu->handle, &sema_info, NULL, &sema)) {
+        FREE_SAFE(frames);
+
+        DEINITIALIZE_SWAPCHAIN;
+
+        return FPX3D_VK_ERROR;
+      }
+
+      lgpu->currentSwapchain.acquireSemaphore = sema;
+    }
+  }
+
+#undef DEINITIALIZE_SWAPCHAIN
+
+  lgpu->currentSwapchain.properties = props;
+  lgpu->currentSwapchain.imageFormat = props.surfaceFormat.format;
+  lgpu->currentSwapchain.swapchain = new_swapchain;
+  lgpu->currentSwapchain.swapchainExtent = extent;
+  lgpu->currentSwapchain.frames = frames;
+  lgpu->currentSwapchain.frameCount = frame_count;
+
+  return FPX3D_SUCCESS;
 }
 
-struct buffer_mem_pair {
-  VkBuffer buffer;
-  VkDeviceSize buffer_size;
-  VkDeviceMemory mem;
-};
+Fpx3d_Vk_Swapchain *fpx3d_vk_get_current_swapchain(Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(lgpu, NULL);
 
-static void new_buffer(VkPhysicalDevice dev, struct logical_gpu_info *lgpu,
-                       size_t size, VkBufferUsageFlags usage_flags,
-                       VkMemoryPropertyFlags mem_prop_flags,
-                       struct buffer_mem_pair *output) {
-  // TODO: allocator stuff
-  // this tutorial page talks about it at the bottom of the page
-  // https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+  return &lgpu->currentSwapchain;
+}
 
+Fpx3d_E_Result fpx3d_vk_destroy_current_swapchain(Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  return _destroy_swapchain(lgpu, &lgpu->currentSwapchain, false);
+}
+
+Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *ctx,
+                                                  Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx->windowContext, FPX3D_VK_BAD_WINDOW_CONTEXT_ERROR);
+  NULL_CHECK(ctx->windowContext->glfwWindow, FPX3D_WND_BAD_WINDOW_HANDLE_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  int width = 0, height = 0;
+  glfwGetFramebufferSize(ctx->windowContext->glfwWindow, &width, &height);
+
+  while (0 == width || 0 == height) {
+    glfwGetFramebufferSize(ctx->windowContext->glfwWindow, &width, &height);
+    glfwWaitEvents();
+  }
+
+  Fpx3d_Vk_Swapchain *old_chain = fpx3d_vk_get_current_swapchain(lgpu);
+  VkRenderPass *pass = old_chain->renderPassReference;
+  vkDeviceWaitIdle(lgpu->handle);
+  fpx3d_vk_create_swapchain(ctx, lgpu, lgpu->currentSwapchain.properties);
+  Fpx3d_Vk_Swapchain *new_chain = fpx3d_vk_get_current_swapchain(lgpu);
+  fpx3d_vk_create_framebuffers(new_chain, lgpu, pass);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_SwapchainFrame *fpx3d_vk_get_swapchain_frame_at(Fpx3d_Vk_Swapchain *sc,
+                                                         size_t index) {
+  NULL_CHECK(sc, NULL);
+  NULL_CHECK(sc->frames, NULL);
+
+  if (sc->frameCount <= index)
+    return NULL;
+
+  return &sc->frames[index];
+}
+
+Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *sc,
+                                                   size_t index,
+                                                   VkQueue *present_queue) {
+  NULL_CHECK(sc, FPX3D_ARGS_ERROR);
+  NULL_CHECK(present_queue, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(sc->frames, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(sc->swapchain, FPX3D_VK_SWAPCHAIN_INVALID_ERROR);
+
+  if (sc->frameCount <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  uint32_t idx = (uint32_t)index;
+
+  VkPresentInfoKHR p_info = {0};
+  p_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+  p_info.waitSemaphoreCount = 1;
+  p_info.pWaitSemaphores = &sc->frames[index].renderFinished;
+
+  p_info.swapchainCount = 1;
+  p_info.pSwapchains = &sc->swapchain;
+  p_info.pImageIndices = &idx;
+
+  p_info.pResults = NULL;
+
+  {
+    VkResult success = vkQueuePresentKHR(*present_queue, &p_info);
+
+    if (VK_ERROR_OUT_OF_DATE_KHR == success) {
+      return FPX3D_VK_FRAME_OUT_OF_DATE_ERROR;
+    } else if (VK_SUBOPTIMAL_KHR == success) {
+      return FPX3D_VK_FRAME_SUBOPTIMAL_ERROR;
+    }
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
+                                            Fpx3d_Vk_LogicalGpu *lgpu,
+                                            VkRenderPass *render_pass) {
+  NULL_CHECK(sc, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(sc->frames, FPX3D_VK_NULLPTR_ERROR);
+
+  for (size_t i = 0; i < sc->frameCount; ++i) {
+    VkFramebuffer new_fb = VK_NULL_HANDLE;
+
+    VkFramebufferCreateInfo fb_info = {0};
+    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fb_info.renderPass = *render_pass;
+    fb_info.attachmentCount = 1;
+    fb_info.pAttachments = &sc->frames[i].view;
+    fb_info.width = sc->swapchainExtent.width;
+    fb_info.height = sc->swapchainExtent.height;
+    fb_info.layers = 1;
+
+    {
+      if (VK_SUCCESS !=
+          vkCreateFramebuffer(lgpu->handle, &fb_info, NULL, &new_fb))
+        return FPX3D_VK_ERROR;
+    }
+
+    sc->frames[i].framebuffer = new_fb;
+  }
+
+  sc->renderPassReference = render_pass;
+
+  return FPX3D_SUCCESS;
+}
+
+VkPipelineLayout fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(lgpu, VK_NULL_HANDLE);
+  LGPU_CHECK(lgpu, VK_NULL_HANDLE);
+
+  VkPipelineLayout new_layout = VK_NULL_HANDLE;
+
+  VkPipelineLayoutCreateInfo pl_info = {0};
+  pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pl_info.setLayoutCount = 0;
+  pl_info.pSetLayouts = NULL;
+  pl_info.pushConstantRangeCount = 0;
+  pl_info.pPushConstantRanges = NULL;
+
+  int result =
+      vkCreatePipelineLayout(lgpu->handle, &pl_info, NULL, &new_layout);
+
+  if (VK_SUCCESS != result) {
+    return VK_NULL_HANDLE;
+  }
+
+  return new_layout;
+}
+
+Fpx3d_E_Result
+fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_LogicalGpu *lgpu,
+                                 VkPipelineLayout layout_handle) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (VK_NULL_HANDLE == layout_handle)
+    return FPX3D_ARGS_ERROR;
+
+  vkDestroyPipelineLayout(lgpu->handle, layout_handle, NULL);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *lgpu,
+                                           size_t amount) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  return _realloc_array((void **)&lgpu->pipelines, sizeof(lgpu->pipelines[0]),
+                        amount, &lgpu->pipelineCapacity);
+}
+
+Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
+    Fpx3d_Vk_LogicalGpu *lgpu, size_t index, VkPipelineLayout p_layout,
+    VkRenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
+    Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(shaders, FPX3D_ARGS_ERROR);
+  NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
+  NULL_CHECK(*render_pass, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->pipelines, FPX3D_VK_NULLPTR_ERROR);
+
+  if (0 ==
+      ((ptrdiff_t)shaders->vertex | (ptrdiff_t)shaders->tesselationControl |
+       (ptrdiff_t)shaders->tesselationEvaluation |
+       (ptrdiff_t)shaders->geometry | (ptrdiff_t)shaders->fragment))
+    return FPX3D_VK_NO_SHADER_STAGES;
+
+  if (0 < vertex_bind_count && NULL == vertex_bindings)
+    return FPX3D_ARGS_ERROR;
+
+  if (lgpu->pipelineCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  uint32_t bind_count = 0;
+  VkVertexInputBindingDescription *bindings = NULL;
+
+  uint32_t attr_count = 0;
+  VkVertexInputAttributeDescription *attributes = NULL;
+
+  if (NULL != vertex_bindings || 1 > vertex_bind_count) {
+    bind_count = vertex_bind_count;
+
+    bindings = (VkVertexInputBindingDescription *)malloc(
+        vertex_bind_count * sizeof(VkVertexInputBindingDescription));
+
+    if (NULL == bindings) {
+      perror("malloc()");
+      return FPX3D_MEMORY_ERROR;
+    }
+
+    for (size_t i = 0; i < bind_count; ++i) {
+      attr_count += vertex_bindings[i].attributeCount;
+      bindings[i].binding = i;
+      bindings[i].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+      bindings[i].stride = vertex_bindings[i].sizePerVertex;
+    }
+
+    attributes = (VkVertexInputAttributeDescription *)malloc(
+        attr_count * sizeof(VkVertexInputAttributeDescription));
+
+    if (NULL == attributes) {
+      perror("malloc()");
+
+      FREE_SAFE(bindings);
+
+      return FPX3D_MEMORY_ERROR;
+    }
+
+    size_t attrs_copied = 0;
+
+    // format lookup table so we don't need switch/case HELL
+    VkFormat possible_formats[] = {0,
+                                   VK_FORMAT_R16G16_SFLOAT,
+                                   VK_FORMAT_R16G16B16_SFLOAT,
+                                   VK_FORMAT_R16G16B16A16_SFLOAT,
+                                   VK_FORMAT_R32G32_SFLOAT,
+                                   VK_FORMAT_R32G32B32_SFLOAT,
+                                   VK_FORMAT_R32G32B32A32_SFLOAT,
+                                   VK_FORMAT_R64G64_SFLOAT,
+                                   VK_FORMAT_R64G64B64_SFLOAT,
+                                   VK_FORMAT_R64G64B64A64_SFLOAT};
+
+    for (size_t i = 0; i < bind_count; ++i) {
+      for (size_t j = 0; j < vertex_bindings[i].attributeCount; ++j) {
+        if (vertex_bindings[i].attributes[j].format >=
+            FPX3D_VK_FORMAT_MAXVALUE) {
+          // uh oh oopsie
+          FREE_SAFE(bindings);
+          FREE_SAFE(attributes);
+
+          return FPX3D_VK_INVALID_FORMAT_ERROR;
+        }
+
+        attributes[attrs_copied].binding = i;
+        attributes[attrs_copied].format =
+            possible_formats[vertex_bindings[i].attributes[j].format];
+        attributes[attrs_copied].location = j;
+        attributes[attrs_copied].offset =
+            vertex_bindings[i].attributes[j].dataOffsetBytes;
+
+        ++attrs_copied;
+      }
+    }
+  }
+
+  VkPipelineVertexInputStateCreateInfo v_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+      .vertexBindingDescriptionCount = bind_count,
+      .pVertexBindingDescriptions = bindings,
+
+      .vertexAttributeDescriptionCount = attr_count,
+      .pVertexAttributeDescriptions = attributes,
+  };
+
+  size_t infos_created = 0;
+  VkPipelineShaderStageCreateInfo stage_infos[8] = {0};
+
+#define PIPELINE_STAGE(mod, stage_bit)                                         \
+  if (VK_NULL_HANDLE != mod) {                                                 \
+    VkPipelineShaderStageCreateInfo s_info = {                                 \
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,          \
+        .stage = stage_bit,                                                    \
+        .module = mod,                                                         \
+        .pName = "main",                                                       \
+    };                                                                         \
+    stage_infos[infos_created++] = s_info;                                     \
+  }
+
+  PIPELINE_STAGE(shaders->vertex, VK_SHADER_STAGE_VERTEX_BIT);
+  PIPELINE_STAGE(shaders->tesselationControl,
+                 VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+  PIPELINE_STAGE(shaders->tesselationEvaluation,
+                 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+  PIPELINE_STAGE(shaders->geometry, VK_SHADER_STAGE_GEOMETRY_BIT);
+  PIPELINE_STAGE(shaders->fragment, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+#undef PIPELINE_STAGE
+
+  VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                     VK_DYNAMIC_STATE_SCISSOR};
+
+  VkPipelineDynamicStateCreateInfo d_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+      .dynamicStateCount = sizeof(dynamic_states) / sizeof(*dynamic_states),
+      .pDynamicStates = dynamic_states,
+  };
+
+  VkPipelineInputAssemblyStateCreateInfo a_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+      .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+      .primitiveRestartEnable = VK_FALSE,
+  };
+
+  VkPipelineViewportStateCreateInfo vs_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+      .viewportCount = 1,
+      .scissorCount = 1,
+      // the viewport and scissor are dynamic, at render time.
+      // we only need to specify how many there will be (1 and 1)
+  };
+
+  VkPipelineRasterizationStateCreateInfo rs_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+      .depthClampEnable = VK_FALSE,
+      .rasterizerDiscardEnable = VK_FALSE,
+
+      .polygonMode = VK_POLYGON_MODE_FILL,
+      .lineWidth = 1.0f,
+
+      .cullMode = VK_CULL_MODE_BACK_BIT,
+      .frontFace = VK_FRONT_FACE_CLOCKWISE,
+
+      .depthBiasEnable = VK_FALSE,
+      .depthBiasConstantFactor = 0.0f,
+      .depthBiasClamp = 0.0f,
+      .depthBiasSlopeFactor = 0.0f,
+  };
+
+  VkPipelineMultisampleStateCreateInfo ms_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+      .sampleShadingEnable = VK_FALSE,
+      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+      .minSampleShading = 1.0f,
+      .pSampleMask = NULL,
+      .alphaToCoverageEnable = VK_FALSE,
+      .alphaToOneEnable = VK_FALSE,
+  };
+
+  VkPipelineColorBlendAttachmentState cb_attach = {
+      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+      .blendEnable = VK_FALSE,
+
+      .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+      .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+      .colorBlendOp = VK_BLEND_OP_ADD,
+
+      .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+      .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+      .alphaBlendOp = VK_BLEND_OP_ADD,
+  };
+
+  VkPipelineColorBlendStateCreateInfo cb_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+      .logicOpEnable = VK_FALSE,
+      .logicOp = VK_LOGIC_OP_COPY,
+      .attachmentCount = 1,
+      .pAttachments = &cb_attach,
+      .blendConstants = {0.0f},
+  };
+
+  VkGraphicsPipelineCreateInfo p_info = {0};
+  VkPipeline new_pipeline;
+
+  {
+    p_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+
+    p_info.stageCount = infos_created;
+    p_info.pStages = stage_infos;
+
+    p_info.pVertexInputState = &v_info;
+    p_info.pInputAssemblyState = &a_info;
+    p_info.pViewportState = &vs_info;
+    p_info.pRasterizationState = &rs_info;
+    p_info.pMultisampleState = &ms_info;
+    p_info.pDepthStencilState = NULL;
+    p_info.pColorBlendState = &cb_info;
+    p_info.pDynamicState = &d_info;
+
+    p_info.layout = p_layout;
+
+    p_info.renderPass = *render_pass;
+    p_info.subpass = 0;
+
+    p_info.basePipelineHandle = VK_NULL_HANDLE;
+    p_info.basePipelineIndex = -1;
+  }
+
+  Fpx3d_E_Result retval = FPX3D_SUCCESS;
+
+  Fpx3d_Vk_Pipeline *p = &lgpu->pipelines[index];
+
+  if (VK_SUCCESS != vkCreateGraphicsPipelines(lgpu->handle, VK_NULL_HANDLE, 1,
+                                              &p_info, NULL, &new_pipeline)) {
+    retval = FPX3D_VK_PIPELINE_CREATE_ERROR;
+  } else {
+    p->pipeline = new_pipeline;
+    p->layout = p_layout;
+    p->type = GRAPHICS_PIPELINE;
+    p->graphics.shapes = NULL;
+    p->graphics.shapeCount = 0;
+  }
+
+  FREE_SAFE(bindings);
+  FREE_SAFE(attributes);
+
+  return retval;
+}
+
+Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                            size_t index) {
+  NULL_CHECK(lgpu, NULL);
+  NULL_CHECK(lgpu->pipelines, NULL);
+
+  if (lgpu->pipelineCapacity <= index)
+    return NULL;
+
+  return &lgpu->pipelines[index];
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                            size_t index) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->pipelines, FPX3D_VK_NULLPTR_ERROR);
+
+  if (lgpu->pipelineCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  Fpx3d_Vk_Pipeline *p = &lgpu->pipelines[index];
+
+  NULL_CHECK(p->pipeline, FPX3D_VK_PIPELINE_INVALID_ERROR);
+
+  switch (p->type) {
+  case GRAPHICS_PIPELINE:
+    FREE_SAFE(p->graphics.shapes);
+    p->graphics.shapeCount = 0;
+    break;
+
+  default:
+    // hmmmmmmm what
+    break;
+  }
+
+  vkDestroyPipeline(lgpu->handle, p->pipeline, NULL);
+
+  memset(p, 0, sizeof(*p));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_allocate_commandpools(Fpx3d_Vk_LogicalGpu *lgpu,
+                                              size_t amount) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  return _realloc_array((void **)&lgpu->commandPools,
+                        sizeof(lgpu->commandPools[0]), amount,
+                        &lgpu->commandPoolCapacity);
+}
+
+Fpx3d_E_Result fpx3d_create_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                           size_t index,
+                                           Fpx3d_Vk_E_CommandPoolType type) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->commandPools, FPX3D_VK_NULLPTR_ERROR);
+
+  if (lgpu->commandPoolCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  Fpx3d_Vk_CommandPool *to_create = &lgpu->commandPools[index];
+
+  VkCommandPoolCreateInfo p_info = {0};
+  p_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  switch (type) {
+  case GRAPHICS_POOL:
+    p_info.queueFamilyIndex = lgpu->graphicsQueues.queueFamilyIndex;
+    p_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    break;
+  case TRANSFER_POOL:
+    p_info.queueFamilyIndex = lgpu->transferQueues.queueFamilyIndex;
+    p_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    break;
+  }
+
+  if (VK_SUCCESS !=
+      vkCreateCommandPool(lgpu->handle, &p_info, NULL, &to_create->pool))
+    return FPX3D_VK_ERROR; // TODO: make better error
+
+  to_create->type = type;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_CommandPool *fpx3d_vk_get_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                                  size_t index) {
+  NULL_CHECK(lgpu, NULL);
+  LGPU_CHECK(lgpu, NULL);
+
+  NULL_CHECK(lgpu->commandPools, NULL);
+
+  if (lgpu->commandPoolCapacity <= index)
+    return NULL;
+
+  return &lgpu->commandPools[index];
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                               size_t index) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->commandPools, FPX3D_VK_NULLPTR_ERROR);
+
+  if (lgpu->commandPoolCapacity <= index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  _destroy_command_pool(lgpu, &lgpu->commandPools[index]);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result
+fpx3d_vk_allocate_commandbuffers_at_pool(Fpx3d_Vk_LogicalGpu *lgpu,
+                                         size_t cmd_pool_index, size_t amount) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(lgpu->commandPools, FPX3D_VK_NULLPTR_ERROR);
+
+  if (lgpu->commandPoolCapacity <= cmd_pool_index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  Fpx3d_Vk_CommandPool *cmd_pool = &lgpu->commandPools[cmd_pool_index];
+
+  if (VK_NULL_HANDLE == cmd_pool->pool)
+    return FPX3D_VK_COMMAND_POOL_INVALID;
+
+  VkCommandBuffer *buffers =
+      (VkCommandBuffer *)malloc(amount * sizeof(VkCommandBuffer));
+
+  if (NULL == buffers) {
+    perror("malloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  VkCommandBufferAllocateInfo b_alloc = {0};
+  b_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  b_alloc.commandPool = cmd_pool->pool;
+  b_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  b_alloc.commandBufferCount = amount;
+
+  if (VK_SUCCESS != vkAllocateCommandBuffers(lgpu->handle, &b_alloc, buffers)) {
+    FREE_SAFE(buffers);
+    return FPX3D_VK_ERROR; // TODO: better error message
+  }
+
+  FREE_SAFE(cmd_pool->buffers);
+  cmd_pool->buffers = buffers;
+  cmd_pool->bufferCount = amount;
+
+  return FPX3D_SUCCESS;
+}
+
+VkCommandBuffer *fpx3d_vk_get_commandbuffer_at(Fpx3d_Vk_CommandPool *pool,
+                                               size_t index) {
+  NULL_CHECK(pool, NULL);
+  NULL_CHECK(pool->buffers, NULL);
+
+  if (pool->bufferCount <= index)
+    return NULL;
+
+  return &pool->buffers[index];
+}
+
+Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *buffer,
+                                                Fpx3d_Vk_Pipeline *pipeline,
+                                                Fpx3d_Vk_Swapchain *swapchain,
+                                                size_t frame_index,
+                                                VkRenderPass *render_pass) {
+  NULL_CHECK(buffer, FPX3D_ARGS_ERROR);
+  NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
+  NULL_CHECK(swapchain, FPX3D_ARGS_ERROR);
+  NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(pipeline->pipeline, FPX3D_VK_PIPELINE_INVALID_ERROR);
+  NULL_CHECK(swapchain->swapchain, FPX3D_VK_SWAPCHAIN_INVALID_ERROR);
+
+  if (VK_NULL_HANDLE == *buffer)
+    return FPX3D_VK_BAD_BUFFER_HANDLE_ERROR;
+
+  if (VK_NULL_HANDLE == *render_pass)
+    return FPX3D_VK_BAD_RENDER_PASS_HANDLE_ERROR;
+
+  if (VK_NULL_HANDLE == pipeline->pipeline)
+    return FPX3D_VK_PIPELINE_INVALID_ERROR;
+
+  if (VK_NULL_HANDLE == swapchain->swapchain)
+    return FPX3D_VK_SWAPCHAIN_INVALID_ERROR;
+
+  if (swapchain->frameCount <= frame_index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  VkCommandBufferBeginInfo b_info = {0};
+  b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  b_info.flags = 0;
+  b_info.pInheritanceInfo = NULL;
+
+  if (VK_SUCCESS != vkBeginCommandBuffer(*buffer, &b_info))
+    return FPX3D_VK_COMMAND_BUFFER_FAULT;
+
+  VkRenderPassBeginInfo r_info = {0};
+  r_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  r_info.renderPass = *render_pass;
+  r_info.framebuffer = swapchain->frames[frame_index].framebuffer;
+
+  r_info.renderArea.extent = swapchain->swapchainExtent;
+  r_info.renderArea.offset.x = 0;
+  r_info.renderArea.offset.y = 0;
+
+  VkClearValue clear = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+  r_info.clearValueCount = 1;
+  r_info.pClearValues = &clear;
+
+  vkCmdBeginRenderPass(*buffer, &r_info, VK_SUBPASS_CONTENTS_INLINE);
+
+  {
+    VkViewport vp = {0};
+    vp.x = 0.0f;
+    vp.y = 0.0f;
+
+    vp.width = (float)swapchain->swapchainExtent.width;
+    vp.height = (float)swapchain->swapchainExtent.height;
+
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(*buffer, 0, 1, &vp);
+
+    VkRect2D scissor = {0};
+    scissor.offset.x = 0;
+    scissor.offset.y = 0;
+    scissor.extent = swapchain->swapchainExtent;
+    vkCmdSetScissor(*buffer, 0, 1, &scissor);
+  }
+
+  vkCmdBindPipeline(*buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipeline->pipeline);
+
+  for (size_t i = 0; i < pipeline->graphics.shapeCount; ++i) {
+    // TODO: fix hardcoded stuff
+
+    Fpx3d_Vk_ShapeBuffer *shape = &pipeline->graphics.shapes[i];
+
+    VkDeviceSize offset = 0;
+
+    vkCmdBindVertexBuffers(*buffer, 0, 1, &shape->vertexBuffer.buffer, &offset);
+
+    if (VK_NULL_HANDLE == shape->indexBuffer.buffer ||
+        VK_NULL_HANDLE == shape->indexBuffer.memory) {
+      // normal draw, using the given vertices
+      // because there's no index buffer
+      vkCmdDraw(*buffer, shape->vertexBuffer.objectCount, 1, 0, 0);
+    } else {
+      // we have an index buffer
+      vkCmdBindIndexBuffer(*buffer, shape->indexBuffer.buffer, 0,
+                           VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(*buffer, shape->indexBuffer.objectCount, 1, 0, 0, 0);
+    }
+  }
+
+  vkCmdEndRenderPass(*buffer);
+
+  if (VK_SUCCESS != vkEndCommandBuffer(*buffer))
+    return FPX3D_VK_ERROR;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_submit_commandbuffer_at(VkCommandBuffer *buffer,
+                                                Fpx3d_Vk_LogicalGpu *lgpu,
+                                                size_t frame_index,
+                                                VkQueue *graphics_queue) {
+  NULL_CHECK(buffer, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(graphics_queue, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (VK_NULL_HANDLE == *buffer)
+    return FPX3D_VK_BAD_BUFFER_HANDLE_ERROR;
+
+  if (VK_NULL_HANDLE == *graphics_queue)
+    return FPX3D_VK_BAD_QUEUE_HANDLE_ERROR;
+
+  if (lgpu->currentSwapchain.frameCount <= frame_index)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  VkSubmitInfo s_info = {0};
+  s_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+  VkPipelineStageFlags sf = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  s_info.waitSemaphoreCount = 1;
+  s_info.pWaitSemaphores = &lgpu->currentSwapchain.acquireSemaphore;
+  s_info.pWaitDstStageMask = &sf;
+
+  s_info.commandBufferCount = 1;
+  s_info.pCommandBuffers = buffer;
+
+  s_info.signalSemaphoreCount = 1;
+  s_info.pSignalSemaphores =
+      &lgpu->currentSwapchain.frames[frame_index].renderFinished;
+
+  if (VK_SUCCESS != vkQueueSubmit(*graphics_queue, 1, &s_info,
+                                  lgpu->inFlightFences[lgpu->frameCounter]))
+    return FPX3D_VK_ERROR;
+
+  lgpu->frameCounter = (lgpu->frameCounter + 1) % MAX_IN_FLIGHT;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result
+fpx3d_vk_draw_frame(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
+                    Fpx3d_Vk_Pipeline *pipelines, size_t pipeline_count,
+                    VkQueue *graphics_queue, VkQueue *present_queue) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(pipelines, FPX3D_ARGS_ERROR);
+  NULL_CHECK(graphics_queue, FPX3D_ARGS_ERROR);
+  NULL_CHECK(present_queue, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  NULL_CHECK(ctx->windowContext, FPX3D_WND_BAD_WINDOW_HANDLE_ERROR);
+
+  uint32_t image_index = UINT32_MAX;
+
+  vkWaitForFences(lgpu->handle, 1, &lgpu->inFlightFences[lgpu->frameCounter],
+                  VK_TRUE, UINT64_MAX);
+
+  {
+    VkResult success = vkAcquireNextImageKHR(
+        lgpu->handle, lgpu->currentSwapchain.swapchain, UINT64_MAX,
+        lgpu->currentSwapchain.acquireSemaphore, VK_NULL_HANDLE, &image_index);
+
+    if (VK_ERROR_OUT_OF_DATE_KHR == success) {
+      return fpx3d_vk_refresh_current_swapchain(ctx, lgpu);
+    } else if (VK_SUCCESS != success && VK_SUBOPTIMAL_KHR != success) {
+      FPX3D_WARN("Could not retrieve next image in swap chain");
+      return FPX3D_VK_ERROR;
+    }
+  }
+
+  vkResetFences(lgpu->handle, 1, &lgpu->inFlightFences[lgpu->frameCounter]);
+
+  if (UINT32_MAX == image_index) {
+    // uhhhh
+    FPX3D_WARN("Failed to retrieve swapchain image index");
+    return FPX3D_VK_ERROR;
+  }
+
+  for (size_t i = 0; i < pipeline_count; ++i) {
+
+    vkResetCommandBuffer(lgpu->inFlightCommandPool.buffers[lgpu->frameCounter],
+                         0);
+
+    {
+      Fpx3d_E_Result success = fpx3d_vk_record_commandbuffer_at(
+          &lgpu->inFlightCommandPool.buffers[lgpu->frameCounter], &pipelines[i],
+          &lgpu->currentSwapchain, image_index,
+          lgpu->currentSwapchain.renderPassReference);
+
+      if (FPX3D_SUCCESS != success)
+        return success;
+    }
+
+    if (FPX3D_SUCCESS !=
+        fpx3d_vk_submit_commandbuffer_at(
+            &lgpu->inFlightCommandPool.buffers[lgpu->frameCounter], lgpu,
+            image_index, graphics_queue))
+      return FPX3D_VK_ERROR;
+  }
+
+  {
+    VkSemaphore temp =
+        lgpu->currentSwapchain.frames[image_index].writeAvailable;
+
+    lgpu->currentSwapchain.frames[image_index].writeAvailable =
+        lgpu->currentSwapchain.acquireSemaphore;
+
+    lgpu->currentSwapchain.acquireSemaphore = temp;
+  }
+
+  {
+    Fpx3d_E_Result success = fpx3d_vk_present_swapchain_frame_at(
+        &lgpu->currentSwapchain, image_index, present_queue);
+
+    if (FPX3D_VK_FRAME_OUT_OF_DATE_ERROR == success ||
+        FPX3D_VK_FRAME_SUBOPTIMAL_ERROR == success) {
+      fpx3d_vk_refresh_current_swapchain(ctx, lgpu);
+
+      ctx->windowContext->resized = false;
+
+      return FPX3D_SUCCESS;
+    } else if (FPX3D_SUCCESS != success) {
+      FPX3D_WARN("Could not present image");
+      return FPX3D_VK_ERROR;
+    }
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+//
+//   END OF LIBRARY IMPLEMENTATION
+//
+
+// -----------------------------------------------------
+
+//
+//  START OF STATIC FUNCTION DEFINITIONS
+//
+
+static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+                        VkDeviceSize size, VkBufferUsageFlags usage,
+                        VkMemoryPropertyFlags mem_flags,
+                        VkSharingMode sharing_mode,
+                        struct fpx3d_vulkan_buffer *output_buffer) {
   VkBuffer new_buf = {0};
   VkDeviceMemory new_mem = {0};
 
@@ -1545,23 +2484,31 @@ static void new_buffer(VkPhysicalDevice dev, struct logical_gpu_info *lgpu,
 
   b_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   b_info.size = size;
-  b_info.usage = usage_flags;
-  b_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  b_info.usage = usage;
 
-  uint32_t indices[2] = {lgpu->render_qf, lgpu->transfer_qf};
-  if (-1 < lgpu->transfer_qf && lgpu->transfer_qf != lgpu->render_qf) {
-    b_info.sharingMode = VK_SHARING_MODE_CONCURRENT;
+  uint32_t indices[2] = {lgpu->graphicsQueues.queueFamilyIndex,
+                         lgpu->transferQueues.queueFamilyIndex};
+
+  if (VK_SHARING_MODE_CONCURRENT == sharing_mode &&
+      (0 <= lgpu->transferQueues.queueFamilyIndex &&
+       lgpu->transferQueues.queueFamilyIndex !=
+           lgpu->graphicsQueues.queueFamilyIndex)) {
+    sharing_mode = VK_SHARING_MODE_CONCURRENT;
     b_info.queueFamilyIndexCount = 2;
     b_info.pQueueFamilyIndices = indices;
+  } else {
+    sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
   }
 
-  if (VK_SUCCESS != vkCreateBuffer(lgpu->gpu, &b_info, NULL, &new_buf)) {
-    fprintf(stderr, "Could not create a buffer\n");
+  b_info.sharingMode = sharing_mode;
+
+  if (VK_SUCCESS != vkCreateBuffer(lgpu->handle, &b_info, NULL, &new_buf)) {
+    FPX3D_WARN("Could not create a buffer");
     return;
   }
 
   VkMemoryRequirements mem_reqs = {0};
-  vkGetBufferMemoryRequirements(lgpu->gpu, new_buf, &mem_reqs);
+  vkGetBufferMemoryRequirements(lgpu->handle, new_buf, &mem_reqs);
 
   VkPhysicalDeviceMemoryProperties mem_props = {0};
   vkGetPhysicalDeviceMemoryProperties(dev, &mem_props);
@@ -1569,14 +2516,13 @@ static void new_buffer(VkPhysicalDevice dev, struct logical_gpu_info *lgpu,
   int idx = -1;
   for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
     if ((mem_reqs.memoryTypeBits & (1 << i)) &&
-        (mem_props.memoryTypes[i].propertyFlags & mem_prop_flags) ==
-            mem_prop_flags)
+        (mem_props.memoryTypes[i].propertyFlags & mem_flags) == mem_flags)
       idx = i;
   }
 
   if (0 > idx) {
     // error
-    fprintf(stderr, "Could not find valid memory type\n");
+    FPX3D_WARN("Could not find valid memory type");
     return;
   }
 
@@ -1585,64 +2531,56 @@ static void new_buffer(VkPhysicalDevice dev, struct logical_gpu_info *lgpu,
   m_info.allocationSize = mem_reqs.size;
   m_info.memoryTypeIndex = idx;
 
-  if (VK_SUCCESS != vkAllocateMemory(lgpu->gpu, &m_info, NULL, &new_mem)) {
-    vkDestroyBuffer(lgpu->gpu, new_buf, NULL);
+  if (VK_SUCCESS != vkAllocateMemory(lgpu->handle, &m_info, NULL, &new_mem)) {
+    vkDestroyBuffer(lgpu->handle, new_buf, NULL);
 
-    fprintf(stderr, "Could not allocate buffer memory\n");
+    FPX3D_WARN("Could not allocate buffer memory");
 
     return;
   }
 
-  if (VK_SUCCESS != vkBindBufferMemory(lgpu->gpu, new_buf, new_mem, 0)) {
+  if (VK_SUCCESS != vkBindBufferMemory(lgpu->handle, new_buf, new_mem, 0)) {
     // error
-    vkFreeMemory(lgpu->gpu, new_mem, NULL);
-    vkDestroyBuffer(lgpu->gpu, new_buf, NULL);
+    vkFreeMemory(lgpu->handle, new_mem, NULL);
+    vkDestroyBuffer(lgpu->handle, new_buf, NULL);
 
-    fprintf(stderr, "Could not bind buffer memory\n");
+    FPX3D_WARN("Could not bind buffer memory");
 
     return;
   }
 
-  output->buffer = new_buf;
-  output->buffer_size = b_info.size;
+  output_buffer->isValid = true;
+  output_buffer->sharingMode = sharing_mode;
 
-  output->mem = new_mem;
+  output_buffer->buffer = new_buf;
+
+  output_buffer->memory = new_mem;
 
   return;
 }
 
-static int data_to_buffer(struct logical_gpu_info *lgpu,
-                          struct buffer_mem_pair *bm, void *to_copy) {
-  // TODO: revisit this funtion after reading this again:
-  // https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_buffer_creation
-
-  // TODO: before performing any action:
-  // check if the amount of vertices in v->vertices (in bytes) is at least the
-  // same size (or bigger) than bm->buffer_size
-
-  // this memory-mapping function stores the mapped address into the 'data'
-  // variable
-  void *data = NULL;
-  if (VK_SUCCESS !=
-      vkMapMemory(lgpu->gpu, bm->mem, 0, bm->buffer_size, 0, &data)) {
+static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *lgpu,
+                           struct fpx3d_vulkan_buffer *buf, void *data,
+                           VkDeviceSize size) {
+  void *mapped = NULL;
+  if (VK_SUCCESS != vkMapMemory(lgpu->handle, buf->memory, 0, size, 0, &mapped))
     return -1;
-  }
 
-  memcpy(data, to_copy, bm->buffer_size);
+  memcpy(mapped, data, size);
 
-  vkUnmapMemory(lgpu->gpu, bm->mem);
-  data = NULL;
+  vkUnmapMemory(lgpu->handle, buf->memory);
 
   return 0;
 }
 
-static void vulkan_bufcopy(VkDevice lgpu, VkQueue transfer_queue, VkBuffer src,
-                           VkBuffer dst, VkDeviceSize size,
-                           VkCommandPool command_pool) {
+static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
+                       struct fpx3d_vulkan_buffer *src,
+                       struct fpx3d_vulkan_buffer *dst, VkDeviceSize size,
+                       VkCommandPool transfer_cmd_pool) {
   VkCommandBufferAllocateInfo b_info = {0};
   b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   b_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  b_info.commandPool = command_pool;
+  b_info.commandPool = transfer_cmd_pool;
   b_info.commandBufferCount = 1;
 
   VkCommandBuffer cbuffer = VK_NULL_HANDLE;
@@ -1659,7 +2597,7 @@ static void vulkan_bufcopy(VkDevice lgpu, VkQueue transfer_queue, VkBuffer src,
   region.dstOffset = 0;
   region.size = size;
 
-  vkCmdCopyBuffer(cbuffer, src, dst, 1, &region);
+  vkCmdCopyBuffer(cbuffer, src->buffer, dst->buffer, 1, &region);
 
   vkEndCommandBuffer(cbuffer);
 
@@ -1671,827 +2609,621 @@ static void vulkan_bufcopy(VkDevice lgpu, VkQueue transfer_queue, VkBuffer src,
   vkQueueSubmit(transfer_queue, 1, &s_info, VK_NULL_HANDLE);
   vkQueueWaitIdle(transfer_queue);
 
-  vkFreeCommandBuffers(lgpu, command_pool, 1, &cbuffer);
+  vkFreeCommandBuffers(lgpu, transfer_cmd_pool, 1, &cbuffer);
+
+  return 0;
+}
+
+static struct fpx3d_vulkan_buffer
+_new_buffer_with_data(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+                      void *data, VkDeviceSize size,
+                      VkBufferUsageFlags usage_flags) {
+  static size_t transfer_queue_index = 0;
+
+  struct fpx3d_vulkan_buffer s_buf = {0};
+  struct fpx3d_vulkan_buffer return_buf = {0};
+
+  NULL_CHECK(dev, return_buf);
+  NULL_CHECK(lgpu->handle, return_buf);
+
+  bool use_staging = false;
+
+  VkQueue transfer_queue = VK_NULL_HANDLE;
+  VkCommandPool transfer_pool = VK_NULL_HANDLE;
+  if (NULL != lgpu->transferQueues.queues && NULL != lgpu->commandPools) {
+    if (lgpu->transferQueues.count > 0) {
+      for (size_t i = 0; i < lgpu->commandPoolCapacity; ++i) {
+        if (TRANSFER_POOL == lgpu->commandPools[i].type) {
+          transfer_pool = lgpu->commandPools[i].pool;
+          break;
+        }
+      }
+
+      use_staging = (VK_NULL_HANDLE != transfer_pool);
+    }
+
+    transfer_queue = lgpu->transferQueues.queues[transfer_queue_index];
+  }
+
+  use_staging = use_staging && (VK_NULL_HANDLE != transfer_queue);
+
+  VkBufferUsageFlags u_flags = usage_flags;
+  VkSharingMode s_mode = VK_SHARING_MODE_EXCLUSIVE;
+  VkMemoryPropertyFlags m_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+  if (use_staging) {
+    transfer_queue_index =
+        (transfer_queue_index + 1) % lgpu->transferQueues.count;
+
+    u_flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    s_mode = VK_SHARING_MODE_CONCURRENT;
+    m_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    _new_buffer(dev, lgpu, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                VK_SHARING_MODE_CONCURRENT, &s_buf);
+
+    if (false == s_buf.isValid)
+      return return_buf;
+
+    _data_to_buffer(lgpu, &s_buf, data, size);
+  }
+
+  _new_buffer(dev, lgpu, size, u_flags, m_flags, s_mode, &return_buf);
+
+  if (use_staging) {
+    _vk_bufcopy(lgpu->handle, transfer_queue, &s_buf, &return_buf, size,
+                transfer_pool);
+
+    vkDestroyBuffer(lgpu->handle, s_buf.buffer, NULL);
+    vkFreeMemory(lgpu->handle, s_buf.memory, NULL);
+  } else {
+    _data_to_buffer(lgpu, &return_buf, data, size);
+  }
+
+  return return_buf;
+}
+
+static void _destroy_buffer_object(Fpx3d_Vk_LogicalGpu *lgpu,
+                                   struct fpx3d_vulkan_buffer *buffer) {
+  if (VK_NULL_HANDLE != buffer->buffer)
+    vkDestroyBuffer(lgpu->handle, buffer->buffer, NULL);
+
+  if (NULL != buffer->mapped_memory)
+    vkUnmapMemory(lgpu->handle, buffer->memory);
+
+  if (VK_NULL_HANDLE != buffer->memory)
+    vkFreeMemory(lgpu->handle, buffer->memory, NULL);
+
+  memset(buffer, 0, sizeof(*buffer));
+}
+
+static struct fpx3d_vulkan_buffer
+_new_vertex_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+                   Fpx3d_Vk_VertexBundle *v_bundle) {
+  struct fpx3d_vulkan_buffer new_buf =
+      _new_buffer_with_data(dev, lgpu, v_bundle->vertices,
+                            v_bundle->vertexCount * v_bundle->vertexDataSize,
+                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+  if (false == new_buf.isValid)
+    return new_buf;
+
+  new_buf.objectCount = v_bundle->vertexCount;
+  new_buf.stride = v_bundle->vertexDataSize;
+
+  return new_buf;
+}
+
+static struct fpx3d_vulkan_buffer
+_new_index_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+                  Fpx3d_Vk_VertexBundle *v_bundle) {
+  struct fpx3d_vulkan_buffer new_buf =
+      _new_buffer_with_data(dev, lgpu, v_bundle->indices,
+                            v_bundle->indexCount * sizeof(v_bundle->indices[0]),
+                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+  if (false == new_buf.isValid)
+    return new_buf;
+
+  new_buf.objectCount = v_bundle->indexCount;
+  new_buf.stride = sizeof(v_bundle->indices[0]);
+
+  return new_buf;
+}
+
+static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
+                                            Fpx3d_Vk_E_ShaderStage stage) {
+  VkShaderModule *module = NULL;
+
+  switch (stage) {
+  case SHADER_STAGE_VERTEX:
+    module = &set->vertex;
+    break;
+  case SHADER_STAGE_TESSELATION_CONTROL:
+    module = &set->tesselationControl;
+    break;
+  case SHADER_STAGE_TESSELATION_EVALUATION:
+    module = &set->tesselationEvaluation;
+    break;
+  case SHADER_STAGE_GEOMETRY:
+    module = &set->geometry;
+    break;
+  case SHADER_STAGE_FRAGMENT:
+    module = &set->fragment;
+    break;
+
+  default:
+    // error
+    break;
+  }
+
+  return module;
+}
+
+static VkShaderModule _new_shader_module(Fpx3d_Vk_LogicalGpu *lgpu,
+                                         Fpx3d_Vk_SpirvFile *spirv) {
+  VkShaderModule new_module = VK_NULL_HANDLE;
+
+  VkShaderModuleCreateInfo m_info = {0};
+  m_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  m_info.codeSize = spirv->filesize;
+  m_info.pCode = (uint32_t *)spirv->buffer;
+
+  if (VK_SUCCESS !=
+      vkCreateShaderModule(lgpu->handle, &m_info, NULL, &new_module))
+    return VK_NULL_HANDLE;
+
+  return new_module;
+}
+
+static void _glfw_resize_callback(GLFWwindow *window, int width, int height) {
+  Fpx3d_Wnd_Context *w_ctx =
+      (Fpx3d_Wnd_Context *)glfwGetWindowUserPointer(window);
+
+  if (NULL == w_ctx) {
+    FPX3D_WARN("GLFW resize callback called, but could not retrieve "
+               "matching window_context");
+    return;
+  }
+
+  w_ctx->windowDimensions[0] = (uint16_t)width;
+  w_ctx->windowDimensions[1] = (uint16_t)height;
+
+  w_ctx->resized = true;
+}
+
+static void _destroy_lgpu(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(ctx, );
+  NULL_CHECK(ctx, );
+  LGPU_CHECK(lgpu, );
+
+  vkDeviceWaitIdle(lgpu->handle);
+
+  FPX3D_DEBUG("Starting destruction of a logical device");
+
+  if (NULL != lgpu->commandPools) {
+    for (size_t i = 0; i < lgpu->commandPoolCapacity; ++i) {
+      fpx3d_vk_destroy_commandpool_at(lgpu, i);
+
+      FREE_SAFE(lgpu->commandPools[i].buffers);
+    }
+  }
+  FREE_SAFE(lgpu->commandPools);
+  lgpu->commandPoolCapacity = 0;
+
+  _destroy_command_pool(lgpu, &lgpu->inFlightCommandPool);
+  FREE_SAFE(lgpu->inFlightCommandPool.buffers);
+
+  FPX3D_DEBUG(" - command pools destroyed");
+
+  fpx3d_vk_destroy_current_swapchain(lgpu);
+
+  for (Fpx3d_Vk_Swapchain *ptr = lgpu->oldSwapchainsList; NULL != ptr;) {
+    Fpx3d_Vk_Swapchain *temp = ptr->nextInList;
+    _destroy_swapchain(lgpu, ptr, true);
+    ptr = temp;
+  }
+
+  FPX3D_DEBUG(" - swapchains destroyed");
+
+  if (NULL != lgpu->renderPasses)
+    for (size_t i = 0; i < lgpu->renderPassCapacity; ++i) {
+      if (VK_NULL_HANDLE != lgpu->renderPasses[i])
+        fpx3d_vk_destroy_renderpass_at(lgpu, i);
+    }
+
+  FREE_SAFE(lgpu->renderPasses);
+  lgpu->renderPassCapacity = 0;
+
+  FPX3D_DEBUG(" - render passes destroyed");
+
+  for (size_t i = 0; i < lgpu->pipelineCapacity; ++i) {
+    fpx3d_vk_destroy_pipeline_at(lgpu, i);
+  }
+  FREE_SAFE(lgpu->pipelines);
+  lgpu->pipelineCapacity = 0;
+
+  FPX3D_DEBUG(" - all pipelines destroyed");
+
+  for (size_t i = 0; i < MAX_IN_FLIGHT; ++i) {
+    vkDestroyFence(lgpu->handle, lgpu->inFlightFences[i], NULL);
+  }
+  FREE_SAFE(lgpu->inFlightFences);
+
+  FPX3D_DEBUG(" - remaining sync objects destroyed");
+
+  if (VK_NULL_HANDLE != lgpu->handle) {
+    vkDestroyDevice(lgpu->handle, NULL);
+  }
+
+  FPX3D_DEBUG(" - logical device destroyed");
+
+  memset(lgpu, 0, sizeof(*lgpu));
 
   return;
 }
 
-static struct buffer_mem_pair new_vertex_buffer(VkPhysicalDevice dev,
-                                                VkQueue transfer_queue,
-                                                struct logical_gpu_info *lgpu,
-                                                const struct vertex_bundle *v) {
-  struct buffer_mem_pair staging_buffer = {0};
-  struct buffer_mem_pair vertex_buffer = {0};
+static void _destroy_command_pool(Fpx3d_Vk_LogicalGpu *lgpu,
+                                  Fpx3d_Vk_CommandPool *pool) {
+  if (VK_NULL_HANDLE == pool->pool)
+    return;
 
-  size_t buffer_size = v->vertex_count * sizeof(v->vertices[0]);
+  vkDestroyCommandPool(lgpu->handle, pool->pool, NULL);
 
-  VkCommandPool transfer_pool = VK_NULL_HANDLE;
-  for (size_t i = 0; i < lgpu->command_pool_capacity; ++i) {
-    if (lgpu->command_pools[i].type == TRANSFER_POOL)
-      transfer_pool = lgpu->command_pools[i].pool;
-  }
+  FREE_SAFE(pool->buffers);
 
-  if (VK_NULL_HANDLE == transfer_pool)
-    return vertex_buffer;
-
-  new_buffer(dev, lgpu, buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-             &staging_buffer);
-
-  data_to_buffer(lgpu, &staging_buffer, v->vertices);
-
-  new_buffer(dev, lgpu, buffer_size,
-             VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vertex_buffer);
-
-  vulkan_bufcopy(lgpu->gpu, transfer_queue, staging_buffer.buffer,
-                 vertex_buffer.buffer, buffer_size, transfer_pool);
-
-  vkDestroyBuffer(lgpu->gpu, staging_buffer.buffer, NULL);
-  vkFreeMemory(lgpu->gpu, staging_buffer.mem, NULL);
-
-  return vertex_buffer;
-}
-
-static struct buffer_mem_pair new_index_buffer(VkPhysicalDevice dev,
-                                               VkQueue transfer_queue,
-                                               struct logical_gpu_info *lgpu,
-                                               const struct vertex_bundle *v) {
-  struct buffer_mem_pair staging_buffer = {0};
-  struct buffer_mem_pair index_buffer = {0};
-
-  size_t buffer_size = v->index_count * sizeof(v->indices[0]);
-
-  VkCommandPool transfer_pool = VK_NULL_HANDLE;
-  for (size_t i = 0; i < lgpu->command_pool_capacity; ++i) {
-    if (lgpu->command_pools[i].type == TRANSFER_POOL)
-      transfer_pool = lgpu->command_pools[i].pool;
-  }
-
-  if (VK_NULL_HANDLE == transfer_pool)
-    return index_buffer;
-
-  new_buffer(dev, lgpu, buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-             &staging_buffer);
-
-  data_to_buffer(lgpu, &staging_buffer, v->indices);
-
-  new_buffer(dev, lgpu, buffer_size,
-             VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &index_buffer);
-
-  vulkan_bufcopy(lgpu->gpu, transfer_queue, staging_buffer.buffer,
-                 index_buffer.buffer, buffer_size, transfer_pool);
-
-  vkDestroyBuffer(lgpu->gpu, staging_buffer.buffer, NULL);
-  vkFreeMemory(lgpu->gpu, staging_buffer.mem, NULL);
-
-  return index_buffer;
-}
-
-void shape_buffer_init(struct shape_buffer *shape) {
-  memset(shape, 0, sizeof(*shape));
-}
-
-int shape_buffer_from_vertices(vulkan_context *ctx, struct indices *indices,
-                               struct shape_buffer *output_shape,
-                               struct vertex_bundle *input_bundle) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-  struct buffer_mem_pair vb = {0};
-  struct buffer_mem_pair ib = {0};
-
-  if (1 > input_bundle->vertex_count || NULL == input_bundle->vertices)
-    return -1;
-
-  vb = new_vertex_buffer(ctx->physical_gpu,
-                         lgpu->transfer_queues[indices->transfer_queue], lgpu,
-                         input_bundle);
-
-  if (VK_NULL_HANDLE == vb.buffer || VK_NULL_HANDLE == vb.mem) {
-    return -2;
-  }
-
-  if (0 < input_bundle->index_count && NULL != input_bundle->indices) {
-    ib = new_index_buffer(ctx->physical_gpu,
-                          lgpu->transfer_queues[indices->transfer_queue], lgpu,
-                          input_bundle);
-
-    if (VK_NULL_HANDLE == ib.buffer || VK_NULL_HANDLE == ib.mem) {
-      vkDestroyBuffer(lgpu->gpu, vb.buffer, NULL);
-      vkFreeMemory(lgpu->gpu, vb.mem, NULL);
-
-      return -2;
-    }
-  }
-
-  output_shape->vertex_buffer = vb.buffer;
-  output_shape->vertex_count = input_bundle->vertex_count;
-  output_shape->vertex_buffer_memory = vb.mem;
-
-  output_shape->index_buffer = ib.buffer;
-  output_shape->index_count = input_bundle->index_count;
-  output_shape->index_buffer_memory = ib.mem;
-
-  return 0;
-}
-
-void free_shape_buffer(vulkan_context *ctx, struct indices *indices,
-                       struct shape_buffer *shape) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-
-  if (VK_NULL_HANDLE != shape->vertex_buffer)
-    vkDestroyBuffer(lgpu->gpu, shape->vertex_buffer, NULL);
-
-  if (VK_NULL_HANDLE != shape->vertex_buffer_memory)
-    vkFreeMemory(lgpu->gpu, shape->vertex_buffer_memory, NULL);
-
-  if (VK_NULL_HANDLE != shape->index_buffer)
-    vkDestroyBuffer(lgpu->gpu, shape->index_buffer, NULL);
-
-  if (VK_NULL_HANDLE != shape->index_buffer_memory)
-    vkFreeMemory(lgpu->gpu, shape->index_buffer_memory, NULL);
-
-  memset(shape, 0, sizeof(*shape));
+  memset(pool, 0, sizeof(*pool));
 
   return;
 }
 
-int create_graphics_pipeline(vulkan_context *ctx, const struct indices *indices,
-                             const struct spirv_file *spirvs,
-                             size_t spirv_count, struct shader_set *set,
-                             struct vertex_attributes *attr,
-                             struct shape_buffer *shapes, size_t shape_count) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-  struct pipeline *p = &lgpu->pipelines[indices->pipeline];
-
-  NULL_CHECK(shapes, -1);
-
-  // uint32_t imported_modules = 0;
-
-  uint8_t infos_created = 0;
-  VkPipelineShaderStageCreateInfo stage_infos[8] = {0};
-
-  if (NULL != spirvs && 0 < spirv_count) {
-    // populate shader_set struct
-    for (size_t i = 0; i < spirv_count; ++i) {
-      VkShaderModule *module = select_module_stage(set, spirvs[i].stage);
-      if (VK_NULL_HANDLE != *module)
-        continue;
-
-      int success = fill_shader_module(ctx, indices, spirvs[i], set);
-
-      if (0 != success) {
-        // error happened
-        return -2;
-      }
-
-      // ++imported_modules;
-    }
-
-#define PIPELINE_STAGE(mod, stage_bit)                                         \
-  {                                                                            \
-    .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,              \
-    .stage = stage_bit, .module = mod, .pName = "main",                        \
-  }
-
-    if (VK_NULL_HANDLE != set->vertex) {
-      VkPipelineShaderStageCreateInfo s_info =
-          PIPELINE_STAGE(set->vertex, VK_SHADER_STAGE_VERTEX_BIT);
-
-      stage_infos[infos_created++] = s_info;
-    }
-
-    if (VK_NULL_HANDLE != set->tesselation_control) {
-      VkPipelineShaderStageCreateInfo s_info = PIPELINE_STAGE(
-          set->tesselation_control, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
-
-      stage_infos[infos_created++] = s_info;
-    }
-
-    if (VK_NULL_HANDLE != set->tesselation_evaluation) {
-      VkPipelineShaderStageCreateInfo s_info =
-          PIPELINE_STAGE(set->tesselation_evaluation,
-                         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
-
-      stage_infos[infos_created++] = s_info;
-    }
-
-    if (VK_NULL_HANDLE != set->geometry) {
-      VkPipelineShaderStageCreateInfo s_info =
-          PIPELINE_STAGE(set->geometry, VK_SHADER_STAGE_GEOMETRY_BIT);
-
-      stage_infos[infos_created++] = s_info;
-    }
-
-    if (VK_NULL_HANDLE != set->fragment) {
-      VkPipelineShaderStageCreateInfo s_info =
-          PIPELINE_STAGE(set->fragment, VK_SHADER_STAGE_FRAGMENT_BIT);
-
-      stage_infos[infos_created++] = s_info;
-    }
-#undef PIPELINE_STAGE
-  }
-
-  VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                     VK_DYNAMIC_STATE_SCISSOR};
-
-  VkPipelineDynamicStateCreateInfo d_info = {0};
-  VkPipelineVertexInputStateCreateInfo v_info = {0};
-  VkPipelineInputAssemblyStateCreateInfo a_info = {0};
-  VkPipelineViewportStateCreateInfo vs_info = {0};
-  VkPipelineRasterizationStateCreateInfo r_info = {0};
-  VkPipelineMultisampleStateCreateInfo ms_info = {0};
-  VkPipelineColorBlendAttachmentState cb_state = {0};
-  VkPipelineColorBlendStateCreateInfo cb_info = {0};
-  VkGraphicsPipelineCreateInfo p_info = {0};
-
-  VkViewport viewport = {0};
-  VkRect2D scissor = {0};
-
-  VkPipelineLayout p_layout = VK_NULL_HANDLE;
-  VkPipeline output_pipeline = VK_NULL_HANDLE;
-
-  {
-    d_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    d_info.dynamicStateCount = sizeof(dynamic_states) / sizeof(*dynamic_states);
-    d_info.pDynamicStates = dynamic_states;
-  }
-
-  {
-    v_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-    uint32_t b_count = 0;
-    VkVertexInputBindingDescription *b = NULL;
-    uint32_t a_count = 0;
-    VkVertexInputAttributeDescription *a = NULL;
-
-    if (NULL != attr) {
-      if (NULL != attr->bindings && 0 < attr->binding_count) {
-        b_count = attr->binding_count;
-        b = attr->bindings;
-      }
-
-      if (NULL != attr->attributes && 0 < attr->attribute_count) {
-        a_count = attr->attribute_count;
-        a = attr->attributes;
-      }
-    }
-
-    v_info.vertexBindingDescriptionCount = b_count;
-    v_info.pVertexBindingDescriptions = b;
-
-    v_info.vertexAttributeDescriptionCount = a_count;
-    v_info.pVertexAttributeDescriptions = a;
-  }
-
-  {
-    a_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    a_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-    a_info.primitiveRestartEnable = VK_FALSE;
-  }
-
-  {
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-
-    viewport.width = lgpu->current_swapchain.swapchain_extent.width;
-    viewport.height = lgpu->current_swapchain.swapchain_extent.height;
-
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-  }
-
-  {
-    scissor.offset.x = 0;
-    scissor.offset.y = 0;
-
-    scissor.extent = lgpu->current_swapchain.swapchain_extent;
-  }
-
-  {
-    vs_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-
-    vs_info.viewportCount = 1;
-    // vs_info.pViewports = &viewport; // not set because of dynamic mode
-
-    vs_info.scissorCount = 1;
-    // vs_info.pScissors = &scissor; // not set because of dynamic mode
-  }
-
-  {
-    r_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-
-    r_info.depthClampEnable = VK_FALSE;
-    r_info.rasterizerDiscardEnable = VK_FALSE;
-
-    r_info.polygonMode = VK_POLYGON_MODE_FILL;
-    r_info.lineWidth = 1.0f;
-
-    r_info.cullMode = VK_CULL_MODE_BACK_BIT;
-    r_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
-
-    r_info.depthBiasEnable = VK_FALSE;
-    r_info.depthBiasConstantFactor = 0.0f;
-    r_info.depthBiasClamp = 0.0f;
-    r_info.depthBiasSlopeFactor = 0.0f;
-  }
-
-  // TODO: multisampling
-  {
-    ms_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms_info.sampleShadingEnable = VK_FALSE;
-    ms_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    ms_info.minSampleShading = 1.0f;
-    ms_info.pSampleMask = NULL;
-    ms_info.alphaToCoverageEnable = VK_FALSE;
-    ms_info.alphaToOneEnable = VK_FALSE;
-  }
-
-  {
-    cb_state.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    cb_state.blendEnable = VK_FALSE;
-
-    cb_state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    cb_state.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-    cb_state.colorBlendOp = VK_BLEND_OP_ADD;
-
-    cb_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    cb_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    cb_state.alphaBlendOp = VK_BLEND_OP_ADD;
-  }
-
-  {
-    cb_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb_info.logicOpEnable = VK_FALSE;
-    cb_info.logicOp = VK_LOGIC_OP_COPY;
-    cb_info.attachmentCount = 1;
-    cb_info.pAttachments = &cb_state;
-    cb_info.blendConstants[0] = 0.0f;
-    cb_info.blendConstants[1] = 0.0f;
-    cb_info.blendConstants[2] = 0.0f;
-    cb_info.blendConstants[3] = 0.0f;
-  }
-
-  {
-    VkPipelineLayoutCreateInfo pl_info = {0};
-    pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pl_info.setLayoutCount = 0;
-    pl_info.pSetLayouts = NULL;
-    pl_info.pushConstantRangeCount = 0;
-    pl_info.pPushConstantRanges = NULL;
-
-    int result = vkCreatePipelineLayout(lgpu->gpu, &pl_info, NULL, &p_layout);
-
-    if (VK_SUCCESS != result) {
-      return -3;
-    }
-
-    if (VK_NULL_HANDLE != p->layout)
-      vkDestroyPipelineLayout(lgpu->gpu, p->layout, NULL);
-
-    p->layout = p_layout;
-  }
-
-  {
-    p_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-
-    p_info.stageCount = infos_created;
-    p_info.pStages = stage_infos;
-
-    p_info.pVertexInputState = &v_info;
-    p_info.pInputAssemblyState = &a_info;
-    p_info.pViewportState = &vs_info;
-    p_info.pRasterizationState = &r_info;
-    p_info.pMultisampleState = &ms_info;
-    p_info.pDepthStencilState = NULL;
-    p_info.pColorBlendState = &cb_info;
-    p_info.pDynamicState = &d_info;
-
-    p_info.layout = p->layout;
-
-    p_info.renderPass = lgpu->render_passes[indices->render_pass];
-    p_info.subpass = 0;
-
-    p_info.basePipelineHandle = VK_NULL_HANDLE;
-    p_info.basePipelineIndex = -1;
-  }
-
-  p->shapes = shapes;
-  p->shape_count = shape_count;
-
-  {
-    int success = vkCreateGraphicsPipelines(lgpu->gpu, VK_NULL_HANDLE, 1,
-                                            &p_info, NULL, &output_pipeline);
-
-    if (VK_SUCCESS != success) {
-      return -4;
-    }
-  }
-
-  p->pipeline = output_pipeline;
-
-#define DESTROY_IF_EXISTS(mod)                                                 \
-  if (VK_NULL_HANDLE != mod)                                                   \
-  vkDestroyShaderModule(lgpu->gpu, mod, NULL)
-
-  // DESTROY_IF_EXISTS(set->input);
-  DESTROY_IF_EXISTS(set->vertex);
-  DESTROY_IF_EXISTS(set->tesselation_control);
-  DESTROY_IF_EXISTS(set->tesselation_evaluation);
-  DESTROY_IF_EXISTS(set->geometry);
-  // DESTROY_IF_EXISTS(set->rasterization);
-  DESTROY_IF_EXISTS(set->fragment);
-  // DESTROY_IF_EXISTS(set->blending);
-
-#undef DESTROY_IF_EXISTS
-
-  return 0;
-}
-
-int create_framebuffers(vulkan_context *ctx, const struct indices *indices) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-  struct active_swapchain *sc = &lgpu->current_swapchain;
-
-  for (size_t i = 0; i < sc->frame_count; ++i) {
-    VkFramebufferCreateInfo fb_info = {0};
-    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_info.renderPass = lgpu->render_passes[indices->render_pass];
-    fb_info.attachmentCount = 1;
-    fb_info.pAttachments = &sc->frames[i].view;
-    fb_info.width = sc->swapchain_extent.width;
-    fb_info.height = sc->swapchain_extent.height;
-    fb_info.layers = 1;
-
-    {
-      int success = vkCreateFramebuffer(lgpu->gpu, &fb_info, NULL,
-                                        &sc->frames[i].framebuffer);
-
-      if (VK_SUCCESS != success)
-        return -1;
-    }
-  }
-
-  return 0;
-}
-
-int allocate_command_pools(vulkan_context *ctx, const struct indices *indices,
-                           size_t amount) {
+static Fpx3d_E_Result _realloc_array(void **arr, size_t obj_size, size_t amount,
+                                     size_t *old_capacity) {
   if (1 > amount)
-    return -1;
+    return FPX3D_ARGS_ERROR;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-
-  lgpu->command_pools = (struct command_pool *)realloc(
-      lgpu->command_pools, amount * sizeof(struct command_pool));
-
-  if (NULL == lgpu->command_pools) {
+  void *data = realloc(*arr, obj_size * amount);
+  if (NULL == data) {
     perror("realloc()");
-    return -2;
+    return FPX3D_MEMORY_ERROR;
   }
 
-  if (lgpu->command_pool_capacity < amount)
-    memset(&lgpu->command_pools[lgpu->command_pool_capacity], 0,
-           sizeof(lgpu->command_pools[0]) *
-               (amount - lgpu->command_pool_capacity));
+  if (amount > *old_capacity) {
+    memset((uint8_t *)data + *old_capacity, 0,
+           (amount - *old_capacity) * obj_size);
+  }
 
-  lgpu->command_pool_capacity = amount;
+  *arr = data;
+  *old_capacity = amount;
 
-  return 0;
+  return FPX3D_SUCCESS;
 }
 
-int create_command_pool(vulkan_context *ctx, const struct indices *indices,
-                        enum command_pool_type type) {
-  struct command_pool pool = {0};
+static bool _qf_meets_requirements(VkQueueFamilyProperties fam,
+                                   Fpx3d_Vk_QueueFamilyRequirements *reqs,
+                                   size_t qf_index) {
+  switch (reqs->type) {
+  case PRESENT_QUEUE:
+    if (NULL == reqs->present.surface)
+      break;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+    VkBool32 present_support = false;
+    vkGetPhysicalDeviceSurfaceSupportKHR(
+        reqs->present.gpu, qf_index, reqs->present.surface, &present_support);
 
-  if (1 > lgpu->command_pool_capacity)
-    return -1;
+    if (true == present_support)
+      return true;
+
+    break;
+
+  case TRANSFER_QUEUE:
+    if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT /*| VK_QUEUE_COMPUTE_BIT*/))
+      return false;
+    // else we fall through to case RENDER to see if other things match
+
+  case GRAPHICS_QUEUE:
+    if (reqs->graphics.requiredFlags ==
+        (reqs->graphics.requiredFlags & fam.queueFlags))
+      return true;
+
+    break;
+
+  default:
+    break;
+  }
+
+  return false;
+}
+
+static Fpx3d_Vk_QueueFamily
+_choose_queue_family(Fpx3d_Vk_Context *ctx,
+                     Fpx3d_Vk_QueueFamilyRequirements *reqs) {
+  Fpx3d_Vk_QueueFamily info = {0};
+  VkQueueFamilyProperties *props = NULL;
+
+  uint32_t available_qf_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalGpu,
+                                           &available_qf_count, NULL);
+
+  if (0 == available_qf_count)
+    return info;
+
+  props = (VkQueueFamilyProperties *)calloc(available_qf_count,
+                                            sizeof(VkQueueFamilyProperties));
+
+  if (NULL == props) {
+    perror("calloc()");
+    return info;
+  }
+
+  vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalGpu,
+                                           &available_qf_count, props);
+
+  int64_t best_index = -1;
+  for (int64_t i = 0; i < available_qf_count; ++i) {
+    if (reqs->indexBlacklistBits & (1 << i))
+      continue;
+
+    VkQueueFamilyProperties *prop = &props[i];
+
+    if (_qf_meets_requirements(*prop, reqs, i)) {
+      if (best_index < 0) {
+        best_index = i;
+        continue;
+      }
+
+      if (prop->queueCount > props[best_index].queueCount) {
+        best_index = i;
+      }
+    }
+  }
+
+  if (0 <= best_index && props[best_index].queueCount >= reqs->minimumQueues) {
+    info.index = best_index;
+    info.properties = props[best_index];
+    info.isValid = true;
+  }
+
+  FREE_SAFE(props);
+
+  return info;
+}
+
+static struct fpx3d_vulkan_queues *
+_get_queues_ptr_by_type(Fpx3d_Vk_LogicalGpu *lgpu, Fpx3d_Vk_E_QueueType type) {
+  switch (type) {
+  case GRAPHICS_QUEUE:
+    return &lgpu->graphicsQueues;
+    break;
+
+  case PRESENT_QUEUE:
+    return &lgpu->presentQueues;
+    break;
+
+  case TRANSFER_QUEUE:
+    return &lgpu->transferQueues;
+    break;
+
+  default:
+    return NULL;
+  }
+}
+
+static Fpx3d_E_Result _destroy_swapchain(Fpx3d_Vk_LogicalGpu *lgpu,
+                                         Fpx3d_Vk_Swapchain *sc, bool force) {
+  NULL_CHECK(sc, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (false == force)
+    for (size_t i = 0; i < sc->frameCount; ++i) {
+      // check states of fences on the frames:
+      // if all signaled, all good.
+      // Otherwise if force == false, return FPX3D_RESOURCE_BUSY_ERROR;
+      if (VK_SUCCESS != vkGetFenceStatus(lgpu->handle, sc->frames[i].idleFence))
+        return FPX3D_RESOURCE_BUSY_ERROR;
+    }
+
+  for (size_t i = 0; i < sc->frameCount; ++i) {
+    if (VK_NULL_HANDLE != sc->frames[i].idleFence)
+      vkDestroyFence(lgpu->handle, sc->frames[i].idleFence, NULL);
+  }
+
+  for (size_t i = 0; i < sc->frameCount; ++i) {
+    if (VK_NULL_HANDLE != sc->frames[i].framebuffer)
+      vkDestroyFramebuffer(lgpu->handle, sc->frames[i].framebuffer, NULL);
+
+    if (VK_NULL_HANDLE != sc->frames[i].view)
+      vkDestroyImageView(lgpu->handle, sc->frames[i].view, NULL);
+
+    if (VK_NULL_HANDLE != sc->frames[i].writeAvailable)
+      vkDestroySemaphore(lgpu->handle, sc->frames[i].writeAvailable, NULL);
+
+    if (VK_NULL_HANDLE != sc->frames[i].renderFinished)
+      vkDestroySemaphore(lgpu->handle, sc->frames[i].renderFinished, NULL);
+  }
+  FREE_SAFE(sc->frames);
+
+  vkDestroySemaphore(lgpu->handle, sc->acquireSemaphore, NULL);
+
+  if (VK_NULL_HANDLE != sc->swapchain)
+    vkDestroySwapchainKHR(lgpu->handle, sc->swapchain, NULL);
+
+  memset(sc, 0, sizeof(*sc));
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result _retire_current_swapchain(Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+
+  Fpx3d_Vk_Swapchain **the_pointer = NULL;
+
+  if (NULL == lgpu->oldSwapchainsList) {
+    the_pointer = &lgpu->oldSwapchainsList;
+  } else if (NULL == lgpu->newestOldSwapchain) {
+    for (the_pointer = &lgpu->oldSwapchainsList[0].nextInList;
+         NULL != *the_pointer; the_pointer = &(*the_pointer)->nextInList)
+      ;
+  } else {
+    the_pointer = &lgpu->newestOldSwapchain->nextInList;
+  }
+
+  *the_pointer = (Fpx3d_Vk_Swapchain *)calloc(1, sizeof(Fpx3d_Vk_Swapchain));
+
+  if (NULL == *the_pointer) {
+    perror("calloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  memcpy(*the_pointer, &lgpu->currentSwapchain, sizeof(Fpx3d_Vk_Swapchain));
+  memset(&lgpu->currentSwapchain, 0, sizeof(lgpu->currentSwapchain));
+
+  lgpu->newestOldSwapchain = *the_pointer;
+  (*the_pointer)->nextInList = NULL;
+
+  return FPX3D_SUCCESS;
+}
+
+static VkExtent2D _new_swapchain_extent(Fpx3d_Wnd_Context *wnd,
+                                        VkSurfaceCapabilitiesKHR cap) {
+  VkExtent2D retval = {0};
+  NULL_CHECK(wnd, retval);
+
+  if (cap.currentExtent.width != UINT32_MAX)
+    return cap.currentExtent;
+
+  int width, height;
+
+  glfwGetFramebufferSize(wnd->glfwWindow, &width, &height);
+
+  retval.height = CLAMP((uint32_t)height, cap.minImageExtent.height,
+                        cap.maxImageExtent.height);
+  retval.width = CLAMP((uint32_t)width, cap.minImageExtent.width,
+                       cap.maxImageExtent.width);
+
+  return retval;
+}
+
+static Fpx3d_E_Result _construct_command_pool(Fpx3d_Vk_LogicalGpu *lgpu,
+                                              Fpx3d_Vk_CommandPool *pool,
+                                              Fpx3d_Vk_E_CommandPoolType type) {
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  NULL_CHECK(pool, FPX3D_ARGS_ERROR);
+
+  Fpx3d_Vk_CommandPool new_pool = {0};
 
   VkCommandPoolCreateInfo p_info = {0};
   p_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   switch (type) {
-  case RENDER_POOL:
-    p_info.queueFamilyIndex = ctx->logical_gpus[indices->logical_gpu].render_qf;
+  case GRAPHICS_POOL:
+    p_info.queueFamilyIndex = lgpu->graphicsQueues.queueFamilyIndex;
     p_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     break;
-
   case TRANSFER_POOL:
-    p_info.queueFamilyIndex =
-        ctx->logical_gpus[indices->logical_gpu].transfer_qf;
+    p_info.queueFamilyIndex = lgpu->transferQueues.queueFamilyIndex;
     p_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     break;
   }
 
-  {
-    int success = vkCreateCommandPool(lgpu->gpu, &p_info, NULL, &pool.pool);
+  if (VK_SUCCESS !=
+      vkCreateCommandPool(lgpu->handle, &p_info, NULL, &new_pool.pool))
+    return FPX3D_VK_ERROR; // TODO: make better error
 
-    if (VK_SUCCESS != success)
-      return -2;
-  }
+  new_pool.type = type;
+  *pool = new_pool;
 
-  pool.type = type;
-  lgpu->command_pools[indices->command_pool] = pool;
-
-  return 0;
+  return FPX3D_SUCCESS;
 }
 
-int create_command_buffers(vulkan_context *ctx, const struct indices *indices,
-                           size_t amount) {
-  VkCommandBuffer *buffers = NULL;
+static bool _surface_format_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
+                                   VkSurfaceFormatKHR *fmts, size_t fmt_count,
+                                   VkSurfaceFormatKHR *output) {
+  uint32_t formats_available = 0;
+  VkSurfaceFormatKHR *formats = NULL;
 
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &formats_available, NULL);
 
-  buffers = (VkCommandBuffer *)malloc(amount * sizeof(VkCommandBuffer));
-  if (NULL == buffers) {
-    perror("malloc()");
-    return -1;
+  if (0 == formats_available)
+    return false;
+
+  formats = (VkSurfaceFormatKHR *)calloc(formats_available,
+                                         sizeof(VkSurfaceFormatKHR));
+
+  if (NULL == formats) {
+    perror("calloc()");
+    return false;
   }
 
-  VkCommandBufferAllocateInfo b_alloc = {0};
-  b_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  b_alloc.commandPool = lgpu->command_pools[indices->command_pool].pool;
-  b_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  b_alloc.commandBufferCount = amount;
+  vkGetPhysicalDeviceSurfaceFormatsKHR(dev, sfc, &formats_available, formats);
 
-  {
-    int success = vkAllocateCommandBuffers(lgpu->gpu, &b_alloc, buffers);
+  if (0 == fmt_count) {
+    *output = formats[0];
+    FREE_SAFE(formats);
+    return true;
+  }
 
-    if (VK_SUCCESS != success) {
-      FREE_SAFE(buffers);
-      return -2;
+  for (size_t i = 0; i < fmt_count; ++i) {
+    for (uint32_t j = 0; j < formats_available; ++j) {
+      if (fmts[i].format == formats[j].format &&
+          fmts[i].colorSpace == formats[j].colorSpace) {
+        FREE_SAFE(formats);
+        *output = fmts[i];
+        return true;
+      }
     }
   }
 
-  FREE_SAFE(lgpu->command_pools[indices->command_pool].buffers);
-  lgpu->command_pools[indices->command_pool].buffers = buffers;
-  lgpu->command_pools[indices->command_pool].buffer_count = amount;
-
-  return 0;
+  FREE_SAFE(formats);
+  return false;
 }
 
-int record_command_buffer(vulkan_context *ctx, const struct indices *indices,
-                          size_t pipeline_index) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+static bool _present_mode_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
+                                 VkPresentModeKHR *mds, size_t md_count,
+                                 VkPresentModeKHR *output) {
+  uint32_t modes_available = 0;
+  VkPresentModeKHR *modes = NULL;
 
-  VkCommandBufferBeginInfo b_info = {0};
-  b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  b_info.flags = 0;
-  b_info.pInheritanceInfo = NULL;
+  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_available, NULL);
 
-  {
-    int success =
-        vkBeginCommandBuffer(lgpu->command_pools[indices->command_pool]
-                                 .buffers[indices->command_buffer],
-                             &b_info);
+  if (0 == modes_available)
+    return false;
 
-    if (VK_SUCCESS != success) {
-      // out of memory
-      return -1;
+  modes = (VkPresentModeKHR *)calloc(modes_available, sizeof(VkPresentModeKHR));
+
+  if (NULL == modes) {
+    perror("calloc()");
+    return false;
+  }
+
+  vkGetPhysicalDeviceSurfacePresentModesKHR(dev, sfc, &modes_available, modes);
+
+  if (0 == md_count) {
+    *output = modes[0];
+    FREE_SAFE(modes);
+    return true;
+  }
+
+  for (size_t i = 0; i < md_count; ++i) {
+    for (uint32_t j = 0; j < modes_available; ++j) {
+      if (mds[i] == modes[j]) {
+        FREE_SAFE(modes);
+        *output = mds[i];
+        return true;
+      }
     }
   }
 
-  VkRenderPassBeginInfo r_info = {0};
-  r_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  r_info.renderPass = lgpu->render_passes[indices->render_pass];
-  r_info.framebuffer =
-      lgpu->current_swapchain.frames[indices->swapchain_frame].framebuffer;
-
-  r_info.renderArea.extent = lgpu->current_swapchain.swapchain_extent;
-  r_info.renderArea.offset.x = 0;
-  r_info.renderArea.offset.y = 0;
-
-  VkClearValue clear = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-  r_info.clearValueCount = 1;
-  r_info.pClearValues = &clear;
-
-  VkCommandBuffer *cb = &lgpu->command_pools[indices->command_pool]
-                             .buffers[indices->command_buffer];
-
-  vkCmdBeginRenderPass(*cb, &r_info, VK_SUBPASS_CONTENTS_INLINE);
-
-  {
-    VkViewport vp = {0};
-    vp.x = 0.0f;
-    vp.y = 0.0f;
-
-    vp.width = (float)lgpu->current_swapchain.swapchain_extent.width;
-    vp.height = (float)lgpu->current_swapchain.swapchain_extent.height;
-
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    vkCmdSetViewport(*cb, 0, 1, &vp);
-
-    VkRect2D scissor = {0};
-    scissor.offset.x = 0;
-    scissor.offset.y = 0;
-    scissor.extent = lgpu->current_swapchain.swapchain_extent;
-    vkCmdSetScissor(*cb, 0, 1, &scissor);
-  }
-
-  struct pipeline *p = &lgpu->pipelines[pipeline_index];
-  vkCmdBindPipeline(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
-
-  for (size_t i = 0; i < p->shape_count; ++i) {
-
-    // TODO: fix hard-coded stuff
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(*cb, 0, 1, &p->shapes[i].vertex_buffer, &offset);
-
-    if (VK_NULL_HANDLE == p->shapes[i].index_buffer ||
-        VK_NULL_HANDLE == p->shapes[i].index_buffer_memory) {
-      // normal draw, using the given vertices
-      // because there's no index buffer
-      vkCmdDraw(*cb, p->shapes[i].vertex_count, 1, 0, 0);
-    } else {
-#ifdef DEBUG
-      void *vertex_buffer = NULL;
-      void *index_buffer = NULL;
-
-      // debug mem-mapping
-      // allows for reading GPU memory in a debugger
-      vkMapMemory(lgpu->gpu, p->shapes[i].vertex_buffer_memory, 0,
-                  p->shapes[i].vertex_count * sizeof(struct vertex), 0,
-                  &vertex_buffer);
-      vkMapMemory(lgpu->gpu, p->shapes[i].index_buffer_memory, 0,
-                  p->shapes[i].index_count * sizeof(uint16_t), 0,
-                  &index_buffer);
-
-      vkUnmapMemory(lgpu->gpu, p->shapes[i].vertex_buffer_memory);
-      vkUnmapMemory(lgpu->gpu, p->shapes[i].index_buffer_memory);
-#endif
-
-      // we have an index buffer
-      vkCmdBindIndexBuffer(*cb, p->shapes[i].index_buffer, 0,
-                           VK_INDEX_TYPE_UINT16);
-      vkCmdDrawIndexed(*cb, p->shapes[i].index_count, 1, 0, 0, 0);
-    }
-  }
-
-  vkCmdEndRenderPass(*cb);
-
-  {
-    int success = vkEndCommandBuffer(*cb);
-    if (VK_SUCCESS != success)
-      return -2;
-  }
-
-  return 0;
+  FREE_SAFE(modes);
+  return false;
 }
 
-int submit_command_buffer(vulkan_context *ctx, const struct indices *indices) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
+//
+//  END OF STATIC FUNCTION DEFINITIONS
+//
 
-  VkSubmitInfo s_info = {0};
-  s_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-  VkPipelineStageFlags sf = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  s_info.waitSemaphoreCount = 1;
-  s_info.pWaitSemaphores = &lgpu->current_swapchain.aquire_semaphore;
-  s_info.pWaitDstStageMask = &sf;
-
-  s_info.commandBufferCount = 1;
-  s_info.pCommandBuffers = &lgpu->command_pools[indices->command_pool]
-                                .buffers[indices->command_buffer];
-
-  s_info.signalSemaphoreCount = 1;
-  s_info.pSignalSemaphores =
-      &lgpu->current_swapchain.frames[indices->swapchain_frame].render_finished;
-
-  {
-    int success =
-        vkQueueSubmit(lgpu->render_queues[indices->render_queue], 1, &s_info,
-                      lgpu->current_swapchain.in_flight_fence);
-
-    if (VK_SUCCESS != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not submit draw command\n");
-#endif
-      return -1;
-    }
-  }
-
-  return 0;
-}
-
-int present_swap_frame(vulkan_context *ctx, const struct indices *indices) {
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-
-  uint32_t img_idx = indices->swapchain_frame;
-  VkPresentInfoKHR p_info = {0};
-  p_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-  p_info.waitSemaphoreCount = 1;
-  p_info.pWaitSemaphores =
-      &lgpu->current_swapchain.frames[img_idx].render_finished;
-
-  p_info.swapchainCount = 1;
-  p_info.pSwapchains = &lgpu->current_swapchain.swapchain;
-  p_info.pImageIndices = &img_idx;
-
-  p_info.pResults = NULL;
-
-  return vkQueuePresentKHR(lgpu->presentation_queues[indices->present_queue],
-                           &p_info);
-}
-
-void draw_frame(window_context *w_ctx, struct indices *indices,
-                uint8_t *pipeline_indices, size_t pipeline_count) {
-  // TODO: something with multiple in-flight frames. idk shit's weird bcs the
-  // tutorial is outdated asf
-  // https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Frames_in_flight
-
-  uint32_t image_index = UINT32_MAX;
-
-  vulkan_context *ctx = w_ctx->vk_context;
-  struct logical_gpu_info *lgpu = &ctx->logical_gpus[indices->logical_gpu];
-
-  vkWaitForFences(lgpu->gpu, 1, &lgpu->current_swapchain.in_flight_fence,
-                  VK_TRUE, UINT64_MAX);
-
-  {
-    VkResult success = vkAcquireNextImageKHR(
-        lgpu->gpu, lgpu->current_swapchain.swapchain, UINT64_MAX,
-        lgpu->current_swapchain.aquire_semaphore, VK_NULL_HANDLE, &image_index);
-
-    if (VK_ERROR_OUT_OF_DATE_KHR == success) {
-      struct swapchain_details new_details =
-          swapchain_compatibility(ctx, ctx->physical_gpu);
-
-      refresh_vulkan_swap_chain(w_ctx, &new_details, indices);
-
-      return;
-    } else if (VK_SUCCESS != success && VK_SUBOPTIMAL_KHR != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not retrieve next image in swap chain\n");
-#endif
-      return;
-    }
-  }
-
-  vkResetFences(lgpu->gpu, 1, &lgpu->current_swapchain.in_flight_fence);
-
-  if (UINT32_MAX == image_index) {
-    // uhhhh
-#ifdef DEBUG
-    fprintf(stderr, "Failed to retrieve swapchain image index\n");
-#endif
-    return;
-  }
-
-  indices->swapchain_frame = image_index;
-
-  // XXX: this will probs break when using more than 1 pipeline.
-  // just got a feeling. problem for later tho
-  for (size_t i = 0; i < pipeline_count; ++i) {
-    vkResetCommandBuffer(lgpu->command_pools[indices->command_pool]
-                             .buffers[indices->command_buffer],
-                         0);
-
-    record_command_buffer(ctx, indices, pipeline_indices[i]);
-
-    if (0 > submit_command_buffer(ctx, indices))
-      return;
-  }
-
-  {
-    VkSemaphore temp = lgpu->current_swapchain.frames[indices->swapchain_frame]
-                           .write_available;
-
-    lgpu->current_swapchain.frames[indices->swapchain_frame].write_available =
-        lgpu->current_swapchain.aquire_semaphore;
-
-    lgpu->current_swapchain.aquire_semaphore = temp;
-  }
-
-  {
-    int success = present_swap_frame(ctx, indices);
-
-    if (VK_ERROR_OUT_OF_DATE_KHR == success || VK_SUBOPTIMAL_KHR == success ||
-        FALSE != w_ctx->resized) {
-      struct swapchain_details new_details =
-          swapchain_compatibility(ctx, ctx->physical_gpu);
-
-      refresh_vulkan_swap_chain(w_ctx, &new_details, indices);
-
-      w_ctx->resized = FALSE;
-
-      return;
-    } else if (VK_SUCCESS != success) {
-#ifdef DEBUG
-      fprintf(stderr, "Could not present image\n");
-#endif
-      return;
-    }
-  }
-
-  return;
-}
+// if you're reading this you're cool! :)
