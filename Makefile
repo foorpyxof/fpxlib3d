@@ -5,11 +5,12 @@ include make/*.mk
 CC = clang
 FILE_EXT = .out
 
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wno-variadic-macro-arguments-omitted
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -Wno-gnu-zero-variadic-macro-arguments -Wno-unknown-warning-option -Wno-variadic-macro-arguments-omitted
 LDFLAGS = -lglfw -lvulkan
 
 RELEASE_FLAGS = -O3
 DEBUG_FLAGS = -DDEBUG -g -O0
+# DEBUG_FLAGS += -fsanitize=address
 
 BUILD_FOLDER = build
 SOURCE_FOLDER = src
@@ -44,22 +45,16 @@ $(OBJECTS_FOLDER):
 	mkdir -p $@
 
 $(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%.o: $(SOURCE_FOLDER)/%.c | $(OBJECTS_FOLDER)
-	$(CC) $(CFLAGS) $(RELEASE_FLAGS) \
-		-c $< -o $@
+	$(CC) $(CFLAGS) $(RELEASE_FLAGS) -c $< -o $@
 
 $(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%_debug.o: $(SOURCE_FOLDER)/%.c | $(OBJECTS_FOLDER)
-	$(CC) $(CFLAGS) $(DEBUG_FLAGS) \
-		-c $< -o $@
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) -c $< -o $@
 
 $(RELEASE_APP): $(OBJECTS_RELEASE) $(MAIN)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(RELEASE_FLAGS) \
-		$^ \
-		-o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(RELEASE_FLAGS) $^ -o $@
 
 $(DEBUG_APP): $(OBJECTS_DEBUG) $(MAIN)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(DEBUG_FLAGS) \
-		$^ \
-		-o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(DEBUG_FLAGS) $^ -o $@
 
 $(SHADER_FILES): %.spv: %
 	glslc $< -o $@

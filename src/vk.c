@@ -30,6 +30,8 @@
 #include "vk.h"
 #include "window.h"
 
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(*arr))
+
 #define FREE_SAFE(ptr)                                                         \
   {                                                                            \
     if (NULL != ptr) {                                                         \
@@ -52,6 +54,10 @@
   if (VK_NULL_HANDLE == (lgpu)->handle) {                                      \
     return retval;                                                             \
   }
+
+struct fpx3d_vk_qf_holder {
+  Fpx3d_Vk_QueueFamily g_family, p_family, t_family;
+};
 
 //
 //  START OF STATIC FUNCTION DECLARATIONS
@@ -131,6 +137,15 @@ static bool _surface_format_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
 static bool _present_mode_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
                                  VkPresentModeKHR *mds, size_t md_count,
                                  VkPresentModeKHR *output);
+
+static Fpx3d_E_Result _find_queue_families(Fpx3d_Vk_Context *ctx,
+                                           size_t g_queues, size_t p_queues,
+                                           size_t t_queues,
+                                           struct fpx3d_vk_qf_holder *output);
+
+static Fpx3d_E_Result _create_queues(Fpx3d_Vk_LogicalGpu *,
+                                     Fpx3d_Vk_E_QueueType, size_t count);
+static Fpx3d_E_Result _create_all_available_queues(Fpx3d_Vk_LogicalGpu *);
 //
 //  END OF STATIC FUNCTION DECLARATIONS
 //
@@ -540,7 +555,7 @@ bool fpx3d_vk_validation_layers_supported(const char **layers,
 
   if (NULL == available_layers) {
     perror("calloc()");
-    FPX3D_ERROR("Error while checking for Vulkan validation layers.");
+    FPX3D_ERROR("Error while checking for Vulkan validation layers");
     return false;
   }
 
@@ -580,11 +595,11 @@ bool fpx3d_vk_device_extensions_supported(VkPhysicalDevice dev,
     return false;
 
   available_extensions =
-      (VkExtensionProperties *)calloc(available, sizeof(VkLayerProperties));
+      (VkExtensionProperties *)calloc(available, sizeof(VkExtensionProperties));
 
   if (NULL == available_extensions) {
     perror("calloc()");
-    FPX3D_ERROR("Error while checking for Vulkan validation layers.");
+    FPX3D_ERROR("Error while checking for Vulkan device extensions");
     return false;
   }
 
@@ -694,16 +709,12 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
 
   // we check for the queried validation layers, if need be.
   // if no layers are set to be queried, we just keep going
-  if (NULL != val_layers && 0 < val_layer_count) {
-  }
 
   if (NULL != val_layers && 0 < val_layer_count) {
     if (false ==
         fpx3d_vk_validation_layers_supported(val_layers, val_layer_count)) {
 
-      FPX3D_DEBUG("One or more requested instance layers were not available");
-
-      return FPX3D_VK_BAD_VALIDATION_LAYERS;
+      FPX3D_WARN("Validation layers- though requested- were not available");
     }
 
     vl_supported = true;
@@ -786,18 +797,18 @@ Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *ctx,
     FREE_SAFE(ctx->logicalGpus);
   }
 
-  if (NULL != wnd->glfwWindow)
-    glfwDestroyWindow(wnd->glfwWindow);
-
-  glfwTerminate();
-
   ctx->logicalGpuCapacity = 0;
 
   if (VK_NULL_HANDLE != ctx->vkInstance)
     vkDestroySurfaceKHR(ctx->vkInstance, ctx->vkSurface, NULL);
 
+  if (NULL != wnd->glfwWindow)
+    glfwDestroyWindow(wnd->glfwWindow);
+
   if (VK_NULL_HANDLE != ctx->vkSurface)
     vkDestroyInstance(ctx->vkInstance, NULL);
+
+  glfwTerminate();
 
   memset(ctx, 0, sizeof(*ctx));
 
@@ -865,14 +876,19 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
     int score = scoring_function(ctx, gpus[i]);
 
     // yipee magic
-    for (int j = i; j >= 0; --j) {
-      if (scored_gpus[j].score < score && 0 < i)
-        memcpy(&scored_gpus[j], &scored_gpus[j + 1], sizeof(*scored_gpus));
+    for (size_t j = i; j >= 0; --j) {
+      if (scored_gpus[j].score < score && 0 < i && j < (gpus_available - 1))
+        memcpy(&scored_gpus[j + 1], &scored_gpus[j], sizeof(*scored_gpus));
 
       if (0 == j || scored_gpus[j - 1].score >= score) {
         scored_gpus[j].gpu = gpus[i];
         scored_gpus[j].score = score;
+
+        break;
       }
+    }
+
+    for (int j = i; j >= 0; --j) {
     }
   }
 
@@ -927,72 +943,14 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   if (1 > available_qf_count)
     return FPX3D_VK_ERROR; // TODO: make more specific errors
 
-  Fpx3d_Vk_QueueFamily g_family = {0};
-  Fpx3d_Vk_QueueFamily p_family = {0};
-  Fpx3d_Vk_QueueFamily t_family = {0};
-
-  size_t graphics_transfer_overlap = 0;
-
-  Fpx3d_Vk_QueueFamilyRequirements qf_reqs = {0};
-
-  bool graphics = false, present = false, transfer = false;
-
-  if (0 < t_queues) {
-    // first we see if there are queue families that support TRANSFER but
-    // not COMPUTE/GRAPHICS because if so, we can use a separate queue
-    // family for TRANSFER operations so that we can always use a separate
-    // queue for that
-    qf_reqs.type = TRANSFER_QUEUE;
-    qf_reqs.minimumQueues = t_queues;
-    qf_reqs.graphics.requiredFlags = VK_QUEUE_TRANSFER_BIT;
-    t_family = _choose_queue_family(ctx, &qf_reqs);
-
-    memset(&qf_reqs, 0, sizeof(qf_reqs));
-  }
-
-  if (0 < g_queues) {
-    qf_reqs.type = GRAPHICS_QUEUE;
-    qf_reqs.minimumQueues =
-        CONDITIONAL(0 > t_family.index, MAX(g_queues, t_queues), g_queues);
-    qf_reqs.graphics.requiredFlags = VK_QUEUE_GRAPHICS_BIT;
-    g_family = _choose_queue_family(ctx, &qf_reqs);
-
-    if (0 > t_family.index)
-      graphics_transfer_overlap =
-          (g_queues + t_queues -
-           MIN(g_queues + t_queues, g_family.properties.queueCount));
-
-    memset(&qf_reqs, 0, sizeof(qf_reqs));
-
-    if (0 > g_family.index)
-      return FPX3D_VK_NO_QUEUEFAMILY_ERROR;
-  }
-
-  if (0 < p_queues) {
-    qf_reqs.type = PRESENT_QUEUE;
-    qf_reqs.minimumQueues = p_queues;
-    qf_reqs.present.gpu = ctx->physicalGpu;
-    qf_reqs.present.surface = ctx->vkSurface;
-    p_family = _choose_queue_family(ctx, &qf_reqs);
-
-    if ((g_family.index == p_family.index) &&
-        (g_queues + p_queues > g_family.properties.queueCount)) {
-      // reroll presentation_qf
-      qf_reqs.indexBlacklistBits = (1 << g_family.index);
-      p_family = _choose_queue_family(ctx, &qf_reqs);
-    }
-  }
-
-  if ((false == g_family.isValid && 0 < g_queues) ||
-      (false == p_family.isValid && 0 < p_queues))
+  struct fpx3d_vk_qf_holder qfs = {0};
+  if (FPX3D_SUCCESS !=
+      _find_queue_families(ctx, g_queues, p_queues, t_queues, &qfs))
     return FPX3D_VK_NO_QUEUEFAMILY_ERROR;
 
-  VkDeviceQueueCreateInfo infos[8] = {0};
-  size_t infos_count = 0;
-
-  size_t highest_queue_count =
-      MAX(g_family.properties.queueCount,
-          MAX(p_family.properties.queueCount, t_family.properties.queueCount));
+  size_t highest_queue_count = MAX(qfs.g_family.properties.queueCount,
+                                   MAX(qfs.p_family.properties.queueCount,
+                                       qfs.t_family.properties.queueCount));
 
   float *priorities = (float *)malloc(highest_queue_count * sizeof(float));
   if (NULL == priorities) {
@@ -1004,58 +962,101 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
     priorities[i] = 1.0f;
   }
 
-  new_lgpu.graphicsQueues.capacity = g_queues;
-  new_lgpu.graphicsQueues.queueFamilyIndex = g_family.index;
-  new_lgpu.presentQueues.capacity = p_queues;
-  new_lgpu.presentQueues.queueFamilyIndex = p_family.index;
-  new_lgpu.transferQueues.capacity = t_queues;
-  new_lgpu.transferQueues.queueFamilyIndex =
-      CONDITIONAL(0 <= t_family.index, t_family.index, g_family.index);
+  VkDeviceQueueCreateInfo infos[8] = {0};
+  size_t infos_count = 0;
 
-  // should always be true. i guess we can still check
-  if (0 <= g_family.index) {
-    VkDeviceQueueCreateInfo *r_info = &infos[infos_count++];
-    r_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    r_info->queueFamilyIndex = g_family.index;
-    r_info->queueCount = g_queues;
-    r_info->pQueuePriorities = priorities;
+#define APPEND_TO_TEMP(fam, q_count)                                           \
+  {                                                                            \
+    temp_infos[temp_info_count].sType =                                        \
+        VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;                            \
+    temp_infos[temp_info_count].queueFamilyIndex = fam.qfIndex;                \
+    temp_infos[temp_info_count].queueCount = q_count,                          \
+    temp_infos[temp_info_count].pQueuePriorities = priorities;                 \
+    maximums[temp_info_count] = fam.properties.queueCount;                     \
+  }
 
-    if (p_family.index == g_family.index) {
-      r_info->queueCount += p_queues;
-      present = true;
+  {
+    size_t temp_info_count = 0;
+    VkDeviceQueueCreateInfo temp_infos[8] = {0};
+    size_t maximums[8] = {0};
+    if (qfs.g_family.isValid) {
+      APPEND_TO_TEMP(qfs.g_family, g_queues);
+
+      new_lgpu.graphicsQueues.queues =
+          (VkQueue *)calloc(new_lgpu.graphicsQueues.count, sizeof(VkQueue));
+      if (NULL == new_lgpu.graphicsQueues.queues) {
+        perror("calloc()");
+        FREE_SAFE(priorities);
+        return FPX3D_MEMORY_ERROR;
+      }
+
+      ++temp_info_count;
+    }
+    if (qfs.p_family.isValid) {
+      APPEND_TO_TEMP(qfs.p_family, p_queues);
+
+      new_lgpu.presentQueues.queues =
+          (VkQueue *)calloc(new_lgpu.presentQueues.count, sizeof(VkQueue));
+      if (NULL == new_lgpu.presentQueues.queues) {
+        perror("calloc()");
+        FREE_SAFE(priorities);
+        FREE_SAFE(new_lgpu.graphicsQueues.queues);
+        return FPX3D_MEMORY_ERROR;
+      }
+
+      ++temp_info_count;
+    }
+    if (qfs.t_family.isValid) {
+      APPEND_TO_TEMP(qfs.t_family, t_queues);
+
+      new_lgpu.transferQueues.queues =
+          (VkQueue *)calloc(new_lgpu.transferQueues.count, sizeof(VkQueue));
+      if (NULL == new_lgpu.transferQueues.queues) {
+        perror("calloc()");
+        FREE_SAFE(priorities);
+        FREE_SAFE(new_lgpu.graphicsQueues.queues);
+        FREE_SAFE(new_lgpu.presentQueues.queues);
+        return FPX3D_MEMORY_ERROR;
+      }
+
+      ++temp_info_count;
     }
 
-    graphics = true;
+#undef APPEND_TO_TEMP
+
+    uint64_t processed_indices = 0;
+    for (size_t i = 0; i < temp_info_count; ++i) {
+      if (processed_indices & (1 << i))
+        continue;
+
+      processed_indices |= (1 << i);
+
+      memcpy(&infos[infos_count], &temp_infos[i], sizeof(*infos));
+
+      for (size_t j = i + 1; j < temp_info_count; ++j) {
+        if (temp_infos[j].queueFamilyIndex != temp_infos[i].queueFamilyIndex)
+          continue;
+
+        processed_indices |= (1 << j);
+
+        infos[infos_count].queueCount =
+            MIN(infos[infos_count].queueCount + temp_infos[j].queueCount,
+                maximums[j]);
+      }
+
+      ++infos_count;
+    }
   }
 
-  if (0 <= p_family.index && g_family.index != p_family.index) {
-    VkDeviceQueueCreateInfo *p_info = &infos[infos_count++];
-    p_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    p_info->queueFamilyIndex = p_family.index;
-    p_info->queueCount = p_queues;
-    p_info->pQueuePriorities = priorities;
-
-    present = TRUE;
-  }
-
-  if (0 <= t_family.index) {
-    VkDeviceQueueCreateInfo *t_info = &infos[infos_count++];
-    t_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    t_info->queueFamilyIndex = t_family.index;
-    t_info->queueCount = t_queues;
-    t_info->pQueuePriorities = priorities;
-
-    transfer = TRUE;
-
-  } else if (0 < t_queues && graphics_transfer_overlap != t_queues) {
-    VkDeviceQueueCreateInfo *t_info = &infos[infos_count++];
-    t_info->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    t_info->queueFamilyIndex = g_family.index;
-    t_info->queueCount = t_queues - graphics_transfer_overlap;
-    t_info->pQueuePriorities = priorities;
-
-    transfer = TRUE;
-  }
+  new_lgpu.graphicsQueues.count = g_queues;
+  new_lgpu.graphicsQueues.queueFamilyIndex = qfs.g_family.qfIndex;
+  new_lgpu.graphicsQueues.offsetInFamily = qfs.g_family.firstQueueIndex;
+  new_lgpu.presentQueues.count = p_queues;
+  new_lgpu.presentQueues.queueFamilyIndex = qfs.p_family.qfIndex;
+  new_lgpu.presentQueues.offsetInFamily = qfs.p_family.firstQueueIndex;
+  new_lgpu.transferQueues.count = t_queues;
+  new_lgpu.transferQueues.queueFamilyIndex = qfs.t_family.qfIndex;
+  new_lgpu.transferQueues.offsetInFamily = qfs.t_family.firstQueueIndex;
 
   FPX3D_DEBUG(" Selected queue family %d for rendering (%lu queue%s)",
               new_lgpu.graphicsQueues.queueFamilyIndex, g_queues,
@@ -1069,20 +1070,12 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
               new_lgpu.transferQueues.queueFamilyIndex, t_queues,
               (t_queues != 1) ? "s" : "");
 
-  if (graphics_transfer_overlap > 0)
-    FPX3D_DEBUG("  (%lu overlapping queue%s between rendering and transfering "
-                "queues)",
-                graphics_transfer_overlap,
-                (graphics_transfer_overlap != 1) ? "s" : "");
-
   for (size_t i = 0; i < infos_count; ++i) {
     FPX3D_DEBUG(" Requesting %u queue%s from queue family %u",
                 infos[i].queueCount,
                 CONDITIONAL(infos[i].queueCount != 1, "s", ""),
                 infos[i].queueFamilyIndex);
   }
-
-  new_lgpu.graphicsTransferOverlap = graphics_transfer_overlap;
 
   VkDeviceCreateInfo d_info = {0};
   d_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1093,8 +1086,8 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   d_info.enabledExtensionCount = ctx->lgpuExtensionCount;
   d_info.ppEnabledExtensionNames = ctx->lgpuExtensions;
 
-  // no longer required, but used for
-  // compatibility with older impl. of Vulkan
+// no longer required, but used for
+// compatibility with older impl. of Vulkan
 #define FPX_VK_USE_VALIDATION_LAYERS
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
   d_info.enabledLayerCount = ctx->validationLayersCount;
@@ -1102,42 +1095,6 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
 #else
   d_info.enabledLayerCount = 0;
 #endif
-
-  if (FALSE != graphics && 0 < new_lgpu.graphicsQueues.capacity) {
-    new_lgpu.graphicsQueues.queues =
-        (VkQueue *)calloc(new_lgpu.graphicsQueues.capacity, sizeof(VkQueue));
-    if (NULL == new_lgpu.graphicsQueues.queues) {
-      perror("calloc()");
-      FREE_SAFE(priorities);
-      return FPX3D_MEMORY_ERROR;
-    }
-  }
-
-  if (FALSE != present && 0 < new_lgpu.presentQueues.capacity) {
-    new_lgpu.presentQueues.queues =
-        (VkQueue *)calloc(new_lgpu.presentQueues.capacity, sizeof(VkQueue));
-    if (NULL == new_lgpu.presentQueues.queues) {
-      perror("calloc()");
-      FREE_SAFE(priorities);
-      FREE_SAFE(new_lgpu.graphicsQueues.queues);
-      return FPX3D_MEMORY_ERROR;
-    }
-  }
-
-  if ((FALSE != transfer || (new_lgpu.graphicsQueues.queueFamilyIndex ==
-                                 new_lgpu.transferQueues.queueFamilyIndex &&
-                             FALSE != graphics)) &&
-      0 < new_lgpu.transferQueues.capacity) {
-    new_lgpu.transferQueues.queues =
-        (VkQueue *)calloc(new_lgpu.transferQueues.capacity, sizeof(VkQueue));
-    if (NULL == new_lgpu.transferQueues.queues) {
-      perror("calloc()");
-      FREE_SAFE(priorities);
-      FREE_SAFE(new_lgpu.graphicsQueues.queues);
-      FREE_SAFE(new_lgpu.presentQueues.queues);
-      return FPX3D_MEMORY_ERROR;
-    }
-  }
 
   VkResult res =
       vkCreateDevice(ctx->physicalGpu, &d_info, NULL, &new_lgpu.handle);
@@ -1208,6 +1165,11 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
     }
   }
 
+  if (FPX3D_SUCCESS != _create_all_available_queues(&new_lgpu)) {
+    _destroy_lgpu(ctx, &new_lgpu);
+    return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+  }
+
   new_lgpu.features = features;
   ctx->logicalGpus[index] = new_lgpu;
 
@@ -1236,57 +1198,6 @@ Fpx3d_E_Result fpx3d_vk_destroy_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   LGPU_CHECK(&ctx->logicalGpus[index], FPX3D_VK_LGPU_INVALID_ERROR);
 
   _destroy_lgpu(ctx, &ctx->logicalGpus[index]);
-
-  return FPX3D_SUCCESS;
-}
-
-Fpx3d_E_Result fpx3d_vk_create_queues(Fpx3d_Vk_LogicalGpu *lgpu,
-                                      Fpx3d_Vk_E_QueueType q_type,
-                                      size_t count) {
-  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
-  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
-
-  struct fpx3d_vulkan_queues *queues = _get_queues_ptr_by_type(lgpu, q_type);
-
-  NULL_CHECK(queues, FPX3D_VK_QUEUE_CREATE_ERROR);
-
-  if (queues->capacity < count + queues->count)
-    return FPX3D_NO_CAPACITY_ERROR;
-
-  for (size_t i = queues->count; i < queues->count + count; ++i) {
-    vkGetDeviceQueue(lgpu->handle, queues->queueFamilyIndex, i,
-                     &queues->queues[i]);
-  }
-
-  queues->count += count;
-
-  return FPX3D_SUCCESS;
-}
-
-Fpx3d_E_Result fpx3d_vk_create_all_available_queues(Fpx3d_Vk_LogicalGpu *lgpu) {
-  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
-  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
-
-  if (0 < (lgpu->graphicsQueues.capacity - lgpu->graphicsQueues.count)) {
-    if (FPX3D_SUCCESS != fpx3d_vk_create_queues(lgpu, GRAPHICS_QUEUE,
-                                                lgpu->graphicsQueues.capacity -
-                                                    lgpu->graphicsQueues.count))
-      return FPX3D_VK_QUEUE_CREATE_ERROR;
-  }
-
-  if (0 < (lgpu->presentQueues.capacity - lgpu->presentQueues.count)) {
-    if (FPX3D_SUCCESS != fpx3d_vk_create_queues(lgpu, PRESENT_QUEUE,
-                                                lgpu->presentQueues.capacity -
-                                                    lgpu->presentQueues.count))
-      return FPX3D_VK_QUEUE_CREATE_ERROR;
-  }
-
-  if (0 < (lgpu->transferQueues.capacity - lgpu->transferQueues.count)) {
-    if (FPX3D_SUCCESS != fpx3d_vk_create_queues(lgpu, TRANSFER_QUEUE,
-                                                lgpu->transferQueues.capacity -
-                                                    lgpu->transferQueues.count))
-      return FPX3D_VK_QUEUE_CREATE_ERROR;
-  }
 
   return FPX3D_SUCCESS;
 }
@@ -1431,7 +1342,7 @@ Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
   NULL_CHECK(lgpu->graphicsQueues.queues, FPX3D_NO_CAPACITY_ERROR);
   NULL_CHECK(lgpu->presentQueues.queues, FPX3D_NO_CAPACITY_ERROR);
 
-  if (0 == lgpu->graphicsQueues.capacity || 0 == lgpu->graphicsQueues.capacity)
+  if (0 == lgpu->graphicsQueues.count || 0 == lgpu->graphicsQueues.count)
     return FPX3D_NO_CAPACITY_ERROR;
 
   if (false == props.presentModeValid || false == props.surfaceFormatValid)
@@ -2513,11 +2424,30 @@ static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
   VkPhysicalDeviceMemoryProperties mem_props = {0};
   vkGetPhysicalDeviceMemoryProperties(dev, &mem_props);
 
+  /*
+   *  Unsupported extensions
+   */
+  uint32_t unsupported = 0;
+
+  {
+    const char *extension = {VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME};
+
+    if (false == fpx3d_vk_device_extensions_supported(dev, &extension, 1))
+      unsupported |= VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD;
+  }
+
+  /*
+   *  End of Unsupported extensions
+   */
+
   int idx = -1;
   for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
     if ((mem_reqs.memoryTypeBits & (1 << i)) &&
-        (mem_props.memoryTypes[i].propertyFlags & mem_flags) == mem_flags)
+        (mem_props.memoryTypes[i].propertyFlags & mem_flags) == mem_flags &&
+        (mem_props.memoryTypes[i].propertyFlags & unsupported) == 0) {
       idx = i;
+      break;
+    }
   }
 
   if (0 > idx) {
@@ -2920,8 +2850,11 @@ static bool _qf_meets_requirements(VkQueueFamilyProperties fam,
     break;
 
   case TRANSFER_QUEUE:
-    if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT /*| VK_QUEUE_COMPUTE_BIT*/))
-      return false;
+    // TODO: reconsider whether or not to do this at all (i don't think so)
+
+    // if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT /*| VK_QUEUE_COMPUTE_BIT*/))
+    //   return false;
+
     // else we fall through to case RENDER to see if other things match
 
   case GRAPHICS_QUEUE:
@@ -2982,7 +2915,7 @@ _choose_queue_family(Fpx3d_Vk_Context *ctx,
   }
 
   if (0 <= best_index && props[best_index].queueCount >= reqs->minimumQueues) {
-    info.index = best_index;
+    info.qfIndex = best_index;
     info.properties = props[best_index];
     info.isValid = true;
   }
@@ -3220,6 +3153,141 @@ static bool _present_mode_picker(VkPhysicalDevice dev, VkSurfaceKHR sfc,
 
   FREE_SAFE(modes);
   return false;
+}
+
+static Fpx3d_E_Result _find_queue_families(Fpx3d_Vk_Context *ctx,
+                                           size_t g_queues, size_t p_queues,
+                                           size_t t_queues,
+                                           struct fpx3d_vk_qf_holder *output) {
+  // TODO: PLEASE OMG FOR THE LOVE OF ALL THAT IS HOLY, PLEASE LOOP THIS CODE
+  // TODO: for-loop magic
+
+  Fpx3d_Vk_QueueFamily g_family = {0}, p_family = {0}, t_family = {0};
+
+  Fpx3d_Vk_QueueFamilyRequirements qf_reqs = {0};
+
+  if (0 < g_queues) {
+    qf_reqs.type = GRAPHICS_QUEUE;
+    qf_reqs.minimumQueues = g_queues;
+    qf_reqs.graphics.requiredFlags = VK_QUEUE_GRAPHICS_BIT;
+    g_family = _choose_queue_family(ctx, &qf_reqs);
+
+    if (!g_family.isValid)
+      return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+    g_family.type = GRAPHICS_QUEUE;
+
+    memset(&qf_reqs, 0, sizeof(qf_reqs));
+  }
+
+  if (0 < p_queues) {
+    qf_reqs.type = PRESENT_QUEUE;
+    qf_reqs.minimumQueues = p_queues;
+    qf_reqs.present.gpu = ctx->physicalGpu;
+    qf_reqs.present.surface = ctx->vkSurface;
+    if (0 < g_queues)
+      qf_reqs.indexBlacklistBits = (1 << g_family.qfIndex);
+    p_family = _choose_queue_family(ctx, &qf_reqs);
+
+    if (0 < g_queues && !p_family.isValid) {
+      qf_reqs.indexBlacklistBits = 0;
+      p_family = _choose_queue_family(ctx, &qf_reqs);
+    }
+
+    if (!p_family.isValid)
+      return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+    p_family.type = PRESENT_QUEUE;
+
+    if (p_family.qfIndex == g_family.qfIndex)
+      p_family.firstQueueIndex = CONDITIONAL(
+          g_family.firstQueueIndex + g_queues >= g_family.properties.queueCount,
+          g_family.properties.queueCount - p_queues,
+          g_family.firstQueueIndex + g_queues);
+
+    memset(&qf_reqs, 0, sizeof(qf_reqs));
+  }
+
+  if (0 < t_queues) {
+    qf_reqs.type = TRANSFER_QUEUE;
+    qf_reqs.minimumQueues = t_queues;
+    qf_reqs.graphics.requiredFlags = VK_QUEUE_TRANSFER_BIT;
+    if (0 < g_queues)
+      qf_reqs.indexBlacklistBits |= (1 << g_family.qfIndex);
+    if (0 < p_queues)
+      qf_reqs.indexBlacklistBits |= (1 << p_family.qfIndex);
+    t_family = _choose_queue_family(ctx, &qf_reqs);
+
+    if (!t_family.isValid) {
+      if (0 < g_queues)
+        qf_reqs.indexBlacklistBits &= ~(1 << g_family.qfIndex);
+      if (0 < p_queues)
+        qf_reqs.indexBlacklistBits &= ~(1 << p_family.qfIndex);
+      t_family = _choose_queue_family(ctx, &qf_reqs);
+    }
+
+    if (!t_family.isValid)
+      return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+    t_family.type = TRANSFER_QUEUE;
+
+    if (t_family.qfIndex == p_family.qfIndex)
+      t_family.firstQueueIndex = CONDITIONAL(
+          p_family.firstQueueIndex + p_queues >= p_family.properties.queueCount,
+          p_family.properties.queueCount - t_queues,
+          p_family.firstQueueIndex + p_queues);
+    else if (t_family.qfIndex == g_family.qfIndex)
+      t_family.firstQueueIndex = CONDITIONAL(
+          g_family.firstQueueIndex + g_queues >= g_family.properties.queueCount,
+          g_family.properties.queueCount - t_queues,
+          g_family.firstQueueIndex + g_queues);
+  }
+
+  output->g_family = g_family;
+  output->p_family = p_family;
+  output->t_family = t_family;
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result _create_queues(Fpx3d_Vk_LogicalGpu *lgpu,
+                                     Fpx3d_Vk_E_QueueType q_type,
+                                     size_t count) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  struct fpx3d_vulkan_queues *queues = _get_queues_ptr_by_type(lgpu, q_type);
+
+  NULL_CHECK(queues, FPX3D_VK_QUEUE_RETRIEVE_ERROR);
+
+  if (count > queues->count)
+    return FPX3D_NO_CAPACITY_ERROR;
+
+  for (size_t i = 0; i < queues->count; ++i) {
+    vkGetDeviceQueue(lgpu->handle, queues->queueFamilyIndex,
+                     queues->offsetInFamily + i, &queues->queues[i]);
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result _create_all_available_queues(Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (FPX3D_SUCCESS !=
+      _create_queues(lgpu, GRAPHICS_QUEUE, lgpu->graphicsQueues.count))
+    return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+  if (FPX3D_SUCCESS !=
+      _create_queues(lgpu, PRESENT_QUEUE, lgpu->presentQueues.count))
+    return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+  if (FPX3D_SUCCESS !=
+      _create_queues(lgpu, TRANSFER_QUEUE, lgpu->transferQueues.count))
+    return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+  return FPX3D_SUCCESS;
 }
 
 //

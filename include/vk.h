@@ -153,8 +153,10 @@ fpx3d_vk_set_required_presentmodes(Fpx3d_Vk_SwapchainRequirements *,
                                    VkPresentModeKHR *modes, size_t count);
 
 struct _fpx3d_vk_qf {
-  ssize_t index;
+  ssize_t qfIndex;
+  size_t firstQueueIndex;
   VkQueueFamilyProperties properties;
+  Fpx3d_Vk_E_QueueType type;
   bool isValid;
 };
 
@@ -358,8 +360,8 @@ struct _fpx3d_vk_command_pool {
 struct fpx3d_vulkan_queues {
   VkQueue *queues;
   size_t count;
-  size_t capacity;
 
+  size_t offsetInFamily;
   int queueFamilyIndex;
 };
 
@@ -385,7 +387,7 @@ struct _fpx3d_vk_lgpu {
   struct fpx3d_vulkan_queues presentQueues;
   struct fpx3d_vulkan_queues transferQueues;
 
-  ssize_t graphicsTransferOverlap;
+  size_t queueFamilyCount;
 
   // don't alter the in-flight metadata in your own usage of this library,
   // unless you understand how to use it to your advantage. Check the
@@ -467,9 +469,6 @@ Fpx3d_Vk_LogicalGpu *fpx3d_vk_get_logicalgpu_at(Fpx3d_Vk_Context *,
                                                 size_t index);
 Fpx3d_E_Result fpx3d_vk_destroy_logicalgpu_at(Fpx3d_Vk_Context *, size_t index);
 
-Fpx3d_E_Result fpx3d_vk_create_queues(Fpx3d_Vk_LogicalGpu *,
-                                      Fpx3d_Vk_E_QueueType, size_t count);
-Fpx3d_E_Result fpx3d_vk_create_all_available_queues(Fpx3d_Vk_LogicalGpu *);
 VkQueue *fpx3d_vk_get_queue_at(Fpx3d_Vk_LogicalGpu *, size_t index,
                                Fpx3d_Vk_E_QueueType);
 // unneccesary? queues are automagically destroyed at lgpu-cleanup time

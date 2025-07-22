@@ -253,10 +253,8 @@ int main(void) {
 
   PRINT_FAILURE(fpx3d_vk_allocate_logicalgpus(&vk_ctx, 2));
   PRINT_FAILURE(
-      fpx3d_vk_create_logicalgpu_at(&vk_ctx, 1, lgpu_features, 1, 1, 2));
+      fpx3d_vk_create_logicalgpu_at(&vk_ctx, 1, lgpu_features, 1, 1, 1));
   lgpu = fpx3d_vk_get_logicalgpu_at(&vk_ctx, 1);
-
-  PRINT_FAILURE(fpx3d_vk_create_all_available_queues(lgpu));
 
   graphics_queue = fpx3d_vk_get_queue_at(lgpu, 0, GRAPHICS_QUEUE);
   present_queue = fpx3d_vk_get_queue_at(lgpu, 0, PRESENT_QUEUE);
