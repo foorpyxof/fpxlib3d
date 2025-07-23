@@ -905,11 +905,17 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
   vkGetPhysicalDeviceProperties(ctx->physicalGpu, &dev_props);
 
   FPX3D_DEBUG("Successfully picked a GPU to use");
-  fprintf(stderr,
-          "--------------------------------------------------\n"
-          " Using Vulkan GPU \"%s\"\n"
-          "--------------------------------------------------\n",
-          dev_props.deviceName);
+  {
+    char print_string[128] = {0};
+    size_t amount_formatted =
+        snprintf(print_string, sizeof(print_string) - 1,
+                 " Using Vulkan GPU \"%s\"", dev_props.deviceName);
+    char dash_bar[128] = {0};
+    snprintf(dash_bar, MIN(sizeof(dash_bar) - 1, amount_formatted + 2),
+             "-----------------------------------------------------------------"
+             "---------------------------------------------------------------");
+    fprintf(stderr, "%s\n%s\n%s\n", dash_bar, print_string, dash_bar);
+  }
 
   return retval;
 }
@@ -2211,7 +2217,7 @@ Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *buffer,
                     pipeline->pipeline);
 
   for (size_t i = 0; i < pipeline->graphics.shapeCount; ++i) {
-    // TODO: fix hardcoded stuff
+    // TODO: fix hardcoded stuff like instanceCount, firstVertex and other args
 
     Fpx3d_Vk_ShapeBuffer *shape = &pipeline->graphics.shapes[i];
 
@@ -2850,9 +2856,11 @@ static bool _qf_meets_requirements(VkQueueFamilyProperties fam,
     break;
 
   case TRANSFER_QUEUE:
-    // TODO: reconsider whether or not to do this at all (i don't think so)
+    // TODO: reconsider whether or not to do the check underneath at all (i
+    // don't think so)
 
-    // if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT /*| VK_QUEUE_COMPUTE_BIT*/))
+    // if (fam.queueFlags & (VK_QUEUE_GRAPHICS_BIT /*|
+    // VK_QUEUE_COMPUTE_BIT*/))
     //   return false;
 
     // else we fall through to case RENDER to see if other things match
