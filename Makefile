@@ -6,7 +6,7 @@ CC = clang
 FILE_EXT = .out
 
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -Wno-gnu-zero-variadic-macro-arguments -Wno-unknown-warning-option -Wno-variadic-macro-arguments-omitted
-LDFLAGS = -lglfw -lvulkan
+LDFLAGS = -lglfw -lvulkan -lm
 
 RELEASE_FLAGS = -O3
 DEBUG_FLAGS = -DDEBUG -g -O0
