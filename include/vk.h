@@ -363,7 +363,7 @@ typedef struct _fpx3d_vk_vertex_binding Fpx3d_Vk_VertexBinding;
 typedef struct _fpx3d_vk_vertex_attr Fpx3d_Vk_VertexAttribute;
 
 struct _fpx3d_vk_vertex {
-  vec2 position;
+  vec3 position;
   vec3 color;
 };
 

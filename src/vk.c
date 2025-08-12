@@ -4,7 +4,6 @@
  */
 
 #include <sys/types.h>
-#include <temp/fpxlib3d/include/vk.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
@@ -676,8 +675,8 @@ Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
   FILE *fp = fopen(filename, "r");
   if (NULL == fp) {
     perror("fopen()");
-    FPX3D_WARN("Could not open file \"%s\". Does it exist in this location?",
-               filename);
+    FPX3D_ERROR("Could not open file \"%s\". Does it exist in this location?",
+                filename);
     return retval;
   }
 
@@ -2408,7 +2407,8 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
       .polygonMode = VK_POLYGON_MODE_FILL,
       .lineWidth = 1.0f,
 
-      .cullMode = VK_CULL_MODE_BACK_BIT,
+      // .cullMode = VK_CULL_MODE_BACK_BIT,
+      .cullMode = VK_CULL_MODE_NONE,
       .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 
       .depthBiasEnable = VK_FALSE,
@@ -2782,9 +2782,9 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
 
       bind_sets[OBJECT_DESCRIPTOR_SET_IDX] = shape_ds->handle;
 
-      vkCmdBindDescriptorSets(*buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              pipeline->layout.handle,
-                              OBJECT_DESCRIPTOR_SET_IDX, 1, bind_sets, 0, NULL);
+      vkCmdBindDescriptorSets(
+          *buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout.handle,
+          PIPELINE_DESCRIPTOR_SET_IDX, 2, bind_sets, 0, NULL);
 
       memcpy(shape_ds->buffer.mapped_memory, shape->bindings.rawData,
              shape_ds->buffer.objectCount * shape_ds->buffer.stride);

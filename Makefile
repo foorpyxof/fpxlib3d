@@ -5,7 +5,7 @@ include make/*.mk
 CC = clang
 FILE_EXT = .out
 
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -Wno-gnu-zero-variadic-macro-arguments -Wno-unknown-warning-option -Wno-variadic-macro-arguments-omitted
+CFLAGS = -std=gnu11  -Wall -Wextra -Wpedantic -Werror -Wno-gnu-zero-variadic-macro-arguments -Wno-unknown-warning-option -Wno-variadic-macro-arguments-omitted
 LDFLAGS = -lglfw -lvulkan -lm
 
 RELEASE_FLAGS = -O3
