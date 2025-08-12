@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <sys/types.h>
+#include <temp/fpxlib3d/include/vk.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
@@ -24,6 +26,12 @@
 #define FPX_VK_USE_VALIDATION_LAYERS
 #define FPX3D_DEBUG_ENABLE
 #endif
+
+// constants
+#define PIPELINE_DESCRIPTOR_SET_IDX 0
+#define OBJECT_DESCRIPTOR_SET_IDX 1
+
+#define HIGHEST_DESCRIPTOR_SET_IDX OBJECT_DESCRIPTOR_SET_IDX
 
 #include "debug.h"
 #include "fpx3d.h"
@@ -63,34 +71,34 @@ struct fpx3d_vk_qf_holder {
 //  START OF STATIC FUNCTION DECLARATIONS
 //
 
+static size_t _align_up(size_t number, size_t alignment);
+
 static void _new_buffer(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
                         VkDeviceSize size, VkBufferUsageFlags,
                         VkMemoryPropertyFlags, VkSharingMode,
-                        struct fpx3d_vulkan_buffer *output);
+                        Fpx3d_Vk_Buffer *output);
 
-static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *, struct fpx3d_vulkan_buffer *,
-                           void *data, VkDeviceSize size);
+static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *, Fpx3d_Vk_Buffer *, void *data,
+                           VkDeviceSize size);
 
 static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
-                       struct fpx3d_vulkan_buffer *src,
-                       struct fpx3d_vulkan_buffer *dst, VkDeviceSize size,
-                       VkCommandPool transfer_cmd_pool);
+                       Fpx3d_Vk_Buffer *src, Fpx3d_Vk_Buffer *dst,
+                       VkDeviceSize size, VkCommandPool transfer_cmd_pool);
 
-static struct fpx3d_vulkan_buffer
-_new_buffer_with_data(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
-                      void *data, VkDeviceSize size,
-                      VkBufferUsageFlags usage_flags);
+static Fpx3d_Vk_Buffer _new_buffer_with_data(VkPhysicalDevice dev,
+                                             Fpx3d_Vk_LogicalGpu *lgpu,
+                                             void *data, VkDeviceSize size,
+                                             VkBufferUsageFlags usage_flags);
 
-static void _destroy_buffer_object(Fpx3d_Vk_LogicalGpu *,
-                                   struct fpx3d_vulkan_buffer *);
+static void _destroy_buffer_object(Fpx3d_Vk_LogicalGpu *, Fpx3d_Vk_Buffer *);
 
-static struct fpx3d_vulkan_buffer _new_vertex_buffer(VkPhysicalDevice,
-                                                     Fpx3d_Vk_LogicalGpu *,
-                                                     Fpx3d_Vk_VertexBundle *);
+static Fpx3d_Vk_Buffer _new_vertex_buffer(VkPhysicalDevice,
+                                          Fpx3d_Vk_LogicalGpu *,
+                                          Fpx3d_Vk_VertexBundle *);
 
-static struct fpx3d_vulkan_buffer _new_index_buffer(VkPhysicalDevice,
-                                                    Fpx3d_Vk_LogicalGpu *,
-                                                    Fpx3d_Vk_VertexBundle *);
+static Fpx3d_Vk_Buffer _new_index_buffer(VkPhysicalDevice,
+                                         Fpx3d_Vk_LogicalGpu *,
+                                         Fpx3d_Vk_VertexBundle *);
 
 static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
                                             Fpx3d_Vk_E_ShaderStage stage);
@@ -146,6 +154,10 @@ static Fpx3d_E_Result _find_queue_families(Fpx3d_Vk_Context *ctx,
 static Fpx3d_E_Result _create_queues(Fpx3d_Vk_LogicalGpu *,
                                      Fpx3d_Vk_E_QueueType, size_t count);
 static Fpx3d_E_Result _create_all_available_queues(Fpx3d_Vk_LogicalGpu *);
+
+static Fpx3d_E_Result _bind_descriptors_to_buffer(Fpx3d_Vk_DescriptorSet *,
+                                                  Fpx3d_Vk_Context *,
+                                                  Fpx3d_Vk_LogicalGpu *);
 //
 //  END OF STATIC FUNCTION DECLARATIONS
 //
@@ -311,8 +323,8 @@ Fpx3d_E_Result fpx3d_vk_create_shapebuffer(Fpx3d_Vk_Context *vk_ctx,
   if (1 > vertex_input->vertexCount || NULL == vertex_input->vertices)
     return FPX3D_ARGS_ERROR;
 
-  struct fpx3d_vulkan_buffer vb = {0};
-  struct fpx3d_vulkan_buffer ib = {0};
+  Fpx3d_Vk_Buffer vb = {0};
+  Fpx3d_Vk_Buffer ib = {0};
 
   vb = _new_vertex_buffer(vk_ctx->physicalGpu, lgpu, vertex_input);
 
@@ -338,8 +350,8 @@ Fpx3d_E_Result fpx3d_vk_create_shapebuffer(Fpx3d_Vk_Context *vk_ctx,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_free_shapebuffer(Fpx3d_Vk_LogicalGpu *lgpu,
-                                         Fpx3d_Vk_ShapeBuffer *shape) {
+Fpx3d_E_Result fpx3d_vk_destroy_shapebuffer(Fpx3d_Vk_LogicalGpu *lgpu,
+                                            Fpx3d_Vk_ShapeBuffer *shape) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(shape, FPX3D_ARGS_ERROR);
 
@@ -351,9 +363,290 @@ Fpx3d_E_Result fpx3d_vk_free_shapebuffer(Fpx3d_Vk_LogicalGpu *lgpu,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_add_shapes_to_pipeline(Fpx3d_Vk_ShapeBuffer *shapes,
-                                               size_t count,
-                                               Fpx3d_Vk_Pipeline *pipeline) {
+Fpx3d_Vk_Shape fpx3d_vk_create_shape(Fpx3d_Vk_ShapeBuffer *buffer) {
+  Fpx3d_Vk_Shape retval = {0};
+  NULL_CHECK(buffer, retval);
+
+  retval.shapeBuffer = buffer;
+  retval.isValid = true;
+
+  return retval;
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_shape(Fpx3d_Vk_Shape *shape,
+                                      Fpx3d_Vk_Context *ctx,
+                                      Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(shape, FPX3D_ARGS_ERROR);
+
+  if (NULL != shape->bindings.inFlightDescriptorSets)
+    for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+      fpx3d_vk_destroy_descriptor_set(
+          &shape->bindings.inFlightDescriptorSets[i], lgpu);
+    }
+
+  FREE_SAFE(shape->bindings.inFlightDescriptorSets);
+  FREE_SAFE(shape->bindings.rawData);
+
+  memset(shape, 0, sizeof(*shape));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_Shape fpx3d_vk_duplicate_shape(Fpx3d_Vk_Shape *subject,
+                                        Fpx3d_Vk_Context *ctx,
+                                        Fpx3d_Vk_LogicalGpu *lgpu) {
+  Fpx3d_Vk_Shape retval = {0};
+
+  NULL_CHECK(subject, retval);
+  NULL_CHECK(ctx, retval);
+  NULL_CHECK(lgpu, retval);
+  LGPU_CHECK(lgpu, retval);
+
+  Fpx3d_Vk_DescriptorSetBinding *bindings = NULL;
+  void *raw_binding_data = NULL;
+
+  bool descriptors = NULL != subject->bindings.inFlightDescriptorSets &&
+                     NULL != subject->bindings.rawData;
+
+  if (descriptors) {
+    size_t alloc_size =
+        subject->bindings.inFlightDescriptorSets->buffer.objectCount *
+        subject->bindings.inFlightDescriptorSets->buffer.stride;
+
+    bindings = (Fpx3d_Vk_DescriptorSetBinding *)calloc(alloc_size, 1);
+
+    if (NULL == bindings) {
+      perror("calloc()");
+      return retval;
+    }
+
+    raw_binding_data = calloc(alloc_size, 1);
+
+    if (NULL == raw_binding_data) {
+      perror("calloc()");
+      FREE_SAFE(bindings);
+      return retval;
+    }
+  }
+
+  retval = fpx3d_vk_create_shape(subject->shapeBuffer);
+
+  if (false == retval.isValid) {
+    FREE_SAFE(bindings);
+    FREE_SAFE(raw_binding_data);
+    return retval;
+  }
+
+  if (descriptors) {
+    for (size_t i = 0;
+         i < subject->bindings.inFlightDescriptorSets->bindingCount; ++i) {
+      bindings[i] = subject->bindings.inFlightDescriptorSets->bindings[i]
+                        .bindingProperties;
+    }
+
+    if (FPX3D_SUCCESS !=
+        fpx3d_vk_create_shape_descriptors(
+            &retval, bindings,
+            subject->bindings.inFlightDescriptorSets->bindingCount,
+            subject->bindings.inFlightDescriptorSets->layoutReference, ctx,
+            lgpu)) {
+      fpx3d_vk_destroy_shape(&retval, ctx, lgpu);
+
+      FREE_SAFE(bindings);
+      FREE_SAFE(raw_binding_data);
+
+      return retval;
+    }
+
+    memcpy(raw_binding_data, subject->bindings.rawData,
+           subject->bindings.inFlightDescriptorSets->buffer.objectCount *
+               subject->bindings.inFlightDescriptorSets->buffer.stride);
+
+    FREE_SAFE(bindings);
+  }
+
+  retval.bindings.rawData = raw_binding_data;
+
+  return retval;
+}
+
+Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
+    Fpx3d_Vk_Shape *shape, Fpx3d_Vk_DescriptorSetBinding *bindings,
+    size_t binding_count, Fpx3d_Vk_DescriptorSetLayout *ds_layout,
+    Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(shape, FPX3D_ARGS_ERROR);
+  NULL_CHECK(bindings, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ds_layout, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  {
+    size_t temp = 0;
+
+    Fpx3d_E_Result alloc_res =
+        _realloc_array((void **)&shape->bindings.inFlightDescriptorSets,
+                       sizeof(Fpx3d_Vk_DescriptorSet),
+                       ctx->constants.maxFramesInFlight, &temp);
+
+    if (FPX3D_SUCCESS != alloc_res)
+      return alloc_res;
+  }
+
+  for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+    shape->bindings.inFlightDescriptorSets[i] = fpx3d_vk_create_descriptor_set(
+        bindings, binding_count, ds_layout, lgpu, ctx);
+
+    if (false == shape->bindings.inFlightDescriptorSets[i].isValid) {
+      for (size_t j = 0; j < i; ++j)
+        fpx3d_vk_destroy_descriptor_set(
+            &shape->bindings.inFlightDescriptorSets[j], lgpu);
+
+      return FPX3D_VK_ERROR;
+    }
+  }
+
+  shape->bindings.rawData =
+      calloc(shape->bindings.inFlightDescriptorSets->buffer.objectCount,
+             shape->bindings.inFlightDescriptorSets->buffer.stride);
+
+  if (NULL == shape->bindings.rawData) {
+    perror("calloc()");
+
+    for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+      fpx3d_vk_destroy_descriptor_set(
+          &shape->bindings.inFlightDescriptorSets[i], lgpu);
+    }
+
+    FREE_SAFE(shape->bindings.inFlightDescriptorSets);
+
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_update_shape_descriptor(Fpx3d_Vk_Shape *shape,
+                                                size_t binding, size_t element,
+                                                void *value,
+                                                Fpx3d_Vk_Context *ctx) {
+  NULL_CHECK(shape, FPX3D_ARGS_ERROR);
+  NULL_CHECK(value, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(shape->bindings.rawData, FPX3D_VK_NULLPTR_ERROR);
+
+  Fpx3d_Vk_DescriptorSet *set_data = shape->bindings.inFlightDescriptorSets;
+
+  NULL_CHECK(set_data, FPX3D_VK_NULLPTR_ERROR);
+
+  if (set_data->bindingCount <= binding)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  if (set_data->bindings[binding].bindingProperties.elementCount <= element)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  uint8_t *destination = (uint8_t *)shape->bindings.rawData;
+  destination += set_data->bindings[binding].dataOffset;
+  destination +=
+      element *
+      _align_up(set_data->bindings[binding].bindingProperties.elementSize,
+                ctx->constants.bufferAlignment);
+
+  memcpy(destination, value,
+         set_data->bindings[binding].bindingProperties.elementSize);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_create_pipeline_descriptors(
+    Fpx3d_Vk_Pipeline *pipeline, Fpx3d_Vk_DescriptorSetBinding *bindings,
+    size_t binding_count, Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
+  NULL_CHECK(bindings, FPX3D_ARGS_ERROR);
+
+  {
+    size_t temp = 0;
+    Fpx3d_E_Result alloc_res =
+        _realloc_array((void **)&pipeline->bindings.inFlightDescriptorSets,
+                       sizeof(Fpx3d_Vk_DescriptorSet),
+                       ctx->constants.maxFramesInFlight, &temp);
+
+    if (FPX3D_SUCCESS != alloc_res)
+      return alloc_res;
+  }
+
+  for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+    pipeline->bindings.inFlightDescriptorSets[i] =
+        fpx3d_vk_create_descriptor_set(
+            bindings, binding_count,
+            &pipeline->layout.descriptorSetLayouts[PIPELINE_DESCRIPTOR_SET_IDX],
+            lgpu, ctx);
+
+    if (false == pipeline->bindings.inFlightDescriptorSets[i].isValid) {
+      for (size_t j = 0; j < i; ++j)
+        fpx3d_vk_destroy_descriptor_set(
+            &pipeline->bindings.inFlightDescriptorSets[j], lgpu);
+
+      return FPX3D_VK_ERROR;
+    }
+  }
+
+  pipeline->bindings.rawData =
+      calloc(pipeline->bindings.inFlightDescriptorSets->buffer.objectCount,
+             pipeline->bindings.inFlightDescriptorSets->buffer.stride);
+
+  if (NULL == pipeline->bindings.rawData) {
+    perror("calloc()");
+
+    for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+      fpx3d_vk_destroy_descriptor_set(
+          &pipeline->bindings.inFlightDescriptorSets[i], lgpu);
+    }
+
+    FREE_SAFE(pipeline->bindings.inFlightDescriptorSets);
+
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_update_pipeline_descriptor(Fpx3d_Vk_Pipeline *pipeline,
+                                                   size_t binding,
+                                                   size_t element, void *value,
+                                                   Fpx3d_Vk_Context *ctx) {
+  NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
+  NULL_CHECK(value, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(pipeline->bindings.rawData, FPX3D_VK_NULLPTR_ERROR);
+
+  Fpx3d_Vk_DescriptorSet *set_data = pipeline->bindings.inFlightDescriptorSets;
+
+  NULL_CHECK(set_data, FPX3D_VK_NULLPTR_ERROR);
+
+  if (set_data->bindingCount <= binding)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  if (set_data->bindings[binding].bindingProperties.elementCount <= element)
+    return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
+
+  uint8_t *destination = (uint8_t *)pipeline->bindings.rawData;
+  destination += set_data->bindings[binding].dataOffset;
+  destination +=
+      element *
+      _align_up(set_data->bindings[binding].bindingProperties.elementSize,
+                ctx->constants.bufferAlignment);
+
+  memcpy(destination, value,
+         set_data->bindings[binding].bindingProperties.elementSize);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_assign_shapes_to_pipeline(Fpx3d_Vk_Shape **shapes,
+                                                  size_t count,
+                                                  Fpx3d_Vk_Pipeline *pipeline) {
   NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
 
   if (1 > count)
@@ -361,19 +654,17 @@ Fpx3d_E_Result fpx3d_vk_add_shapes_to_pipeline(Fpx3d_Vk_ShapeBuffer *shapes,
 
   NULL_CHECK(shapes, FPX3D_ARGS_ERROR);
 
-  pipeline->graphics.shapes = (Fpx3d_Vk_ShapeBuffer *)realloc(
-      pipeline->graphics.shapes,
-      (pipeline->graphics.shapeCount + count) * sizeof(Fpx3d_Vk_ShapeBuffer));
+  _realloc_array((void **)&pipeline->graphics.shapes, sizeof(*shapes), count,
+                 &pipeline->graphics.shapeCount);
 
   if (NULL == pipeline->graphics.shapes) {
     perror("realloc()");
     return FPX3D_MEMORY_ERROR;
   }
 
-  memcpy(&pipeline->graphics.shapes[pipeline->graphics.shapeCount], shapes,
-         count * sizeof(*shapes));
+  memcpy(pipeline->graphics.shapes, shapes, count * sizeof(*shapes));
 
-  pipeline->graphics.shapeCount += count;
+  pipeline->graphics.shapeCount = count;
 
   return FPX3D_SUCCESS;
 }
@@ -499,8 +790,8 @@ Fpx3d_E_Result fpx3d_vk_load_shadermodules(Fpx3d_Vk_SpirvFile *spirvs,
 
 #define COPY_IF_NOT_EXIST(dst, src)                                            \
   {                                                                            \
-    if (VK_NULL_HANDLE == dst) {                                               \
-      dst = src;                                                               \
+    if (VK_NULL_HANDLE == dst.handle) {                                        \
+      dst.handle = src.handle;                                                 \
     }                                                                          \
   }
 
@@ -515,8 +806,8 @@ Fpx3d_E_Result fpx3d_vk_load_shadermodules(Fpx3d_Vk_SpirvFile *spirvs,
 
 #define DESTROY_IF_EXISTS(mod)                                                 \
   {                                                                            \
-    if (VK_NULL_HANDLE != mod) {                                               \
-      vkDestroyShaderModule(lgpu->handle, mod, NULL);                          \
+    if (VK_NULL_HANDLE != mod.handle) {                                        \
+      vkDestroyShaderModule(lgpu->handle, mod.handle, NULL);                   \
     }                                                                          \
   }
 
@@ -683,6 +974,9 @@ Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *ctx,
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
 
   ctx->windowContext = wnd;
+
+  // user can change this
+  ctx->constants.maxFramesInFlight = 1;
 
   return FPX3D_SUCCESS;
 }
@@ -904,6 +1198,10 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
   VkPhysicalDeviceProperties dev_props = {0};
   vkGetPhysicalDeviceProperties(ctx->physicalGpu, &dev_props);
 
+  ctx->constants.bufferAlignment =
+      MAX(dev_props.limits.minUniformBufferOffsetAlignment,
+          dev_props.limits.minStorageBufferOffsetAlignment);
+
   FPX3D_DEBUG("Successfully picked a GPU to use");
   {
     char print_string[128] = {0};
@@ -989,7 +1287,7 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
       APPEND_TO_TEMP(qfs.g_family, g_queues);
 
       new_lgpu.graphicsQueues.queues =
-          (VkQueue *)calloc(new_lgpu.graphicsQueues.count, sizeof(VkQueue));
+          (VkQueue *)calloc(g_queues, sizeof(VkQueue));
       if (NULL == new_lgpu.graphicsQueues.queues) {
         perror("calloc()");
         FREE_SAFE(priorities);
@@ -1002,7 +1300,7 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
       APPEND_TO_TEMP(qfs.p_family, p_queues);
 
       new_lgpu.presentQueues.queues =
-          (VkQueue *)calloc(new_lgpu.presentQueues.count, sizeof(VkQueue));
+          (VkQueue *)calloc(p_queues, sizeof(VkQueue));
       if (NULL == new_lgpu.presentQueues.queues) {
         perror("calloc()");
         FREE_SAFE(priorities);
@@ -1016,7 +1314,7 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
       APPEND_TO_TEMP(qfs.t_family, t_queues);
 
       new_lgpu.transferQueues.queues =
-          (VkQueue *)calloc(new_lgpu.transferQueues.count, sizeof(VkQueue));
+          (VkQueue *)calloc(t_queues, sizeof(VkQueue));
       if (NULL == new_lgpu.transferQueues.queues) {
         perror("calloc()");
         FREE_SAFE(priorities);
@@ -1117,7 +1415,8 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
     return FPX3D_VK_LGPU_CREATE_ERROR;
   }
 
-  new_lgpu.inFlightFences = (VkFence *)malloc(MAX_IN_FLIGHT * sizeof(VkFence));
+  new_lgpu.inFlightFences =
+      (VkFence *)malloc(ctx->constants.maxFramesInFlight * sizeof(VkFence));
 
   if (NULL == new_lgpu.inFlightFences) {
     _destroy_lgpu(ctx, &new_lgpu);
@@ -1138,8 +1437,8 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   }
 
   {
-    new_lgpu.inFlightCommandPool.buffers =
-        (VkCommandBuffer *)calloc(MAX_IN_FLIGHT, sizeof(VkCommandBuffer));
+    new_lgpu.inFlightCommandPool.buffers = (VkCommandBuffer *)calloc(
+        ctx->constants.maxFramesInFlight, sizeof(VkCommandBuffer));
 
     if (NULL == new_lgpu.inFlightCommandPool.buffers) {
       perror("calloc()");
@@ -1151,7 +1450,7 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
     VkCommandBufferAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     alloc_info.commandPool = new_lgpu.inFlightCommandPool.pool;
-    alloc_info.commandBufferCount = MAX_IN_FLIGHT;
+    alloc_info.commandBufferCount = ctx->constants.maxFramesInFlight;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 
     if (VK_SUCCESS !=
@@ -1160,10 +1459,10 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
       _destroy_lgpu(ctx, &new_lgpu);
     }
 
-    new_lgpu.inFlightCommandPool.bufferCount = MAX_IN_FLIGHT;
+    new_lgpu.inFlightCommandPool.bufferCount = ctx->constants.maxFramesInFlight;
   }
 
-  for (size_t i = 0; i < MAX_IN_FLIGHT; ++i) {
+  for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
     if (VK_SUCCESS != vkCreateFence(new_lgpu.handle, &f_info, NULL,
                                     &new_lgpu.inFlightFences[i])) {
       _destroy_lgpu(ctx, &new_lgpu);
@@ -1221,6 +1520,184 @@ VkQueue *fpx3d_vk_get_queue_at(Fpx3d_Vk_LogicalGpu *lgpu, size_t index,
     return NULL;
 
   return &queues->queues[index];
+}
+
+Fpx3d_Vk_DescriptorSetLayout
+fpx3d_vk_create_descriptor_set_layout(Fpx3d_Vk_DescriptorSetBinding *bindings,
+                                      size_t binding_count,
+                                      Fpx3d_Vk_LogicalGpu *lgpu) {
+  Fpx3d_Vk_DescriptorSetLayout retval = {0};
+
+  VkDescriptorSetLayoutBinding *layout_binds =
+      (VkDescriptorSetLayoutBinding *)calloc(
+          binding_count, sizeof(VkDescriptorSetLayoutBinding));
+
+  if (NULL == layout_binds) {
+    perror("calloc()");
+    return retval;
+  }
+
+  for (size_t i = 0; i < binding_count; ++i) {
+    VkDescriptorSetLayoutBinding *b = &layout_binds[i];
+
+    b->binding = i;
+    b->descriptorCount = bindings[i].elementCount;
+    b->descriptorType = (VkDescriptorType)bindings[i].type;
+
+    b->stageFlags = bindings[i].shaderStages;
+
+    b->pImmutableSamplers = NULL;
+  }
+
+  VkDescriptorSetLayoutCreateInfo dsl_info = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      .bindingCount = binding_count,
+      .pBindings = layout_binds};
+
+  if (VK_SUCCESS != vkCreateDescriptorSetLayout(lgpu->handle, &dsl_info, NULL,
+                                                &retval.handle))
+    retval.handle = VK_NULL_HANDLE;
+
+  FREE_SAFE(layout_binds);
+
+  retval.bindingCount = binding_count;
+  retval.isValid = true;
+
+  return retval;
+}
+
+Fpx3d_E_Result
+fpx3d_vk_destroy_descriptor_set_layout(Fpx3d_Vk_DescriptorSetLayout *layout,
+                                       Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(layout, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (VK_NULL_HANDLE != layout->handle && layout->isValid) {
+    vkDestroyDescriptorSetLayout(lgpu->handle, layout->handle, NULL);
+    memset(layout, 0, sizeof(*layout));
+  }
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_DescriptorSet fpx3d_vk_create_descriptor_set(
+    Fpx3d_Vk_DescriptorSetBinding *bindings, size_t binding_count,
+    Fpx3d_Vk_DescriptorSetLayout *layout, Fpx3d_Vk_LogicalGpu *lgpu,
+    Fpx3d_Vk_Context *ctx) {
+  Fpx3d_Vk_DescriptorSet retval = {0};
+
+  NULL_CHECK(bindings, retval);
+  NULL_CHECK(layout, retval);
+  NULL_CHECK(ctx, retval);
+  NULL_CHECK(lgpu, retval);
+  LGPU_CHECK(lgpu, retval);
+
+  if (false == layout->isValid)
+    return retval;
+
+  Fpx3d_E_Result alloc_success =
+      _realloc_array((void **)&retval.bindings, sizeof(retval.bindings[0]),
+                     binding_count, &retval.bindingCount);
+
+  if (FPX3D_SUCCESS != alloc_success)
+    return retval;
+
+  size_t total_mem_size = 0;
+
+#define POOL_TYPE_COUNT 1
+
+  VkDescriptorPoolSize p_sizes[POOL_TYPE_COUNT] = {0};
+  VkDescriptorPoolSize *uniforms = &p_sizes[0];
+  uniforms->type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+  for (size_t i = 0; i < binding_count; ++i) {
+    if (bindings[i].type == DESC_UNIFORM)
+      uniforms->descriptorCount += bindings[i].elementCount;
+
+    retval.bindings[i].bindingProperties = bindings[i];
+    retval.bindings[i].dataOffset = total_mem_size;
+
+    total_mem_size +=
+        bindings[i].elementCount *
+        _align_up(bindings[i].elementSize, ctx->constants.bufferAlignment);
+  }
+  retval.bindingCount = binding_count;
+
+  VkDescriptorPoolCreateInfo p_info = {0};
+  p_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  p_info.poolSizeCount = POOL_TYPE_COUNT;
+  p_info.pPoolSizes = p_sizes;
+  p_info.maxSets = 1;
+
+  if (VK_SUCCESS !=
+      vkCreateDescriptorPool(lgpu->handle, &p_info, NULL, &retval.pool))
+    return retval;
+
+  VkDescriptorSetAllocateInfo s_info = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = retval.pool,
+      .descriptorSetCount = 1,
+      .pSetLayouts = &layout->handle};
+  if (VK_SUCCESS !=
+      vkAllocateDescriptorSets(lgpu->handle, &s_info, &retval.handle)) {
+    vkDestroyDescriptorPool(lgpu->handle, retval.pool, NULL);
+    return retval;
+  }
+
+  _new_buffer(
+      ctx->physicalGpu, lgpu, total_mem_size,
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT /* TODO: make not hard-coded */,
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+      VK_SHARING_MODE_EXCLUSIVE, &retval.buffer);
+
+  if (retval.buffer.isValid) {
+    if (VK_SUCCESS != vkMapMemory(lgpu->handle, retval.buffer.memory, 0,
+                                  VK_WHOLE_SIZE, 0,
+                                  &retval.buffer.mapped_memory)) {
+      _destroy_buffer_object(lgpu, &retval.buffer);
+    } else {
+      memset(retval.buffer.mapped_memory, 0, total_mem_size);
+      retval.buffer.objectCount = 1;
+      retval.buffer.stride = total_mem_size;
+    }
+  }
+
+  if (false == retval.buffer.isValid) {
+    FREE_SAFE(retval.bindings);
+    vkDestroyDescriptorPool(lgpu->handle, retval.pool, NULL);
+  } else if (FPX3D_SUCCESS != _bind_descriptors_to_buffer(&retval, ctx, lgpu)) {
+    FREE_SAFE(retval.bindings);
+    _destroy_buffer_object(lgpu, &retval.buffer);
+
+    vkDestroyDescriptorPool(lgpu->handle, retval.pool, NULL);
+  }
+
+  retval.layoutReference = layout;
+  retval.isValid = retval.buffer.isValid;
+
+  return retval;
+
+#undef POOL_TYPE_COUNT
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_descriptor_set(Fpx3d_Vk_DescriptorSet *set,
+                                               Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(set, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if (VK_NULL_HANDLE != set->pool && set->isValid) {
+    vkDestroyDescriptorPool(lgpu->handle, set->pool, NULL);
+    FREE_SAFE(set->bindings);
+  }
+
+  _destroy_buffer_object(lgpu, &set->buffer);
+
+  memset(set, 0, sizeof(*set));
+
+  return FPX3D_SUCCESS;
 }
 
 Fpx3d_E_Result fpx3d_vk_allocate_renderpasses(Fpx3d_Vk_LogicalGpu *lgpu,
@@ -1678,39 +2155,87 @@ Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
   return FPX3D_SUCCESS;
 }
 
-VkPipelineLayout fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_LogicalGpu *lgpu) {
-  NULL_CHECK(lgpu, VK_NULL_HANDLE);
-  LGPU_CHECK(lgpu, VK_NULL_HANDLE);
+Fpx3d_Vk_PipelineLayout
+fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_DescriptorSetLayout *ds_layouts,
+                                size_t ds_layout_count,
+                                Fpx3d_Vk_LogicalGpu *lgpu) {
+  Fpx3d_Vk_PipelineLayout retval = {0};
 
-  VkPipelineLayout new_layout = VK_NULL_HANDLE;
+  NULL_CHECK(lgpu, retval);
+  LGPU_CHECK(lgpu, retval);
+
+  if (NULL == ds_layouts || 1 > ds_layout_count) {
+    ds_layouts = NULL;
+    ds_layout_count = 0;
+  } else {
+    for (size_t i = 0; i < ds_layout_count; ++i) {
+      if (false == ds_layouts[i].isValid) {
+        return retval;
+      }
+    }
+  }
+
+  VkDescriptorSetLayout *ds_layout_handles = NULL;
+
+  if (0 < ds_layout_count) {
+
+    Fpx3d_E_Result alloc_success =
+        _realloc_array((void **)&retval.descriptorSetLayouts,
+                       sizeof(retval.descriptorSetLayouts[0]), ds_layout_count,
+                       &retval.descriptorSetLayoutCount);
+
+    if (FPX3D_SUCCESS != alloc_success)
+      return retval;
+
+    ds_layout_handles = malloc(ds_layout_count * sizeof(VkDescriptorSetLayout));
+
+    if (NULL == ds_layout_handles) {
+      perror("malloc()");
+      return retval;
+    }
+
+    for (size_t i = 0; i < ds_layout_count; ++i) {
+      ds_layout_handles[i] = ds_layouts[i].handle;
+    }
+
+    memcpy(retval.descriptorSetLayouts, ds_layouts,
+           ds_layout_count * sizeof(*ds_layouts));
+  }
 
   VkPipelineLayoutCreateInfo pl_info = {0};
   pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pl_info.setLayoutCount = 0;
-  pl_info.pSetLayouts = NULL;
+  pl_info.setLayoutCount = ds_layout_count;
+  pl_info.pSetLayouts = ds_layout_handles;
   pl_info.pushConstantRangeCount = 0;
   pl_info.pPushConstantRanges = NULL;
 
   int result =
-      vkCreatePipelineLayout(lgpu->handle, &pl_info, NULL, &new_layout);
+      vkCreatePipelineLayout(lgpu->handle, &pl_info, NULL, &retval.handle);
+
+  FREE_SAFE(ds_layout_handles);
 
   if (VK_SUCCESS != result) {
-    return VK_NULL_HANDLE;
+    FREE_SAFE(retval.descriptorSetLayouts);
+    return retval;
   }
 
-  return new_layout;
+  FREE_SAFE(ds_layout_handles);
+
+  retval.isValid = true;
+
+  return retval;
 }
 
-Fpx3d_E_Result
-fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_LogicalGpu *lgpu,
-                                 VkPipelineLayout layout_handle) {
+Fpx3d_E_Result fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_PipelineLayout *layout,
+                                                Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(layout, FPX3D_ARGS_ERROR);
+
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  if (VK_NULL_HANDLE == layout_handle)
-    return FPX3D_ARGS_ERROR;
-
-  vkDestroyPipelineLayout(lgpu->handle, layout_handle, NULL);
+  if (VK_NULL_HANDLE != layout->handle && layout->isValid) {
+    vkDestroyPipelineLayout(lgpu->handle, layout->handle, NULL);
+  }
 
   return FPX3D_SUCCESS;
 }
@@ -1725,7 +2250,7 @@ Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *lgpu,
 }
 
 Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
-    Fpx3d_Vk_LogicalGpu *lgpu, size_t index, VkPipelineLayout p_layout,
+    Fpx3d_Vk_LogicalGpu *lgpu, size_t index, Fpx3d_Vk_PipelineLayout *p_layout,
     VkRenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
     Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
@@ -1736,14 +2261,12 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
 
   NULL_CHECK(lgpu->pipelines, FPX3D_VK_NULLPTR_ERROR);
 
-  if (0 ==
-      ((ptrdiff_t)shaders->vertex | (ptrdiff_t)shaders->tesselationControl |
-       (ptrdiff_t)shaders->tesselationEvaluation |
-       (ptrdiff_t)shaders->geometry | (ptrdiff_t)shaders->fragment))
+  if (0 == ((ptrdiff_t)shaders->vertex.handle |
+            (ptrdiff_t)shaders->tesselationControl.handle |
+            (ptrdiff_t)shaders->tesselationEvaluation.handle |
+            (ptrdiff_t)shaders->geometry.handle |
+            (ptrdiff_t)shaders->fragment.handle))
     return FPX3D_VK_NO_SHADER_STAGES;
-
-  if (0 < vertex_bind_count && NULL == vertex_bindings)
-    return FPX3D_ARGS_ERROR;
 
   if (lgpu->pipelineCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
@@ -1754,7 +2277,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
   uint32_t attr_count = 0;
   VkVertexInputAttributeDescription *attributes = NULL;
 
-  if (NULL != vertex_bindings || 1 > vertex_bind_count) {
+  if (NULL != vertex_bindings && 0 < vertex_bind_count) {
     bind_count = vertex_bind_count;
 
     bindings = (VkVertexInputBindingDescription *)malloc(
@@ -1786,6 +2309,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
     size_t attrs_copied = 0;
 
     // format lookup table so we don't need switch/case HELL
+    // this matches enum Fpx3d_Vk_VertexAttribute.format
     VkFormat possible_formats[] = {0,
                                    VK_FORMAT_R16G16_SFLOAT,
                                    VK_FORMAT_R16G16B16_SFLOAT,
@@ -1833,11 +2357,11 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
   VkPipelineShaderStageCreateInfo stage_infos[8] = {0};
 
 #define PIPELINE_STAGE(mod, stage_bit)                                         \
-  if (VK_NULL_HANDLE != mod) {                                                 \
+  if (VK_NULL_HANDLE != mod.handle) {                                          \
     VkPipelineShaderStageCreateInfo s_info = {                                 \
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,          \
         .stage = stage_bit,                                                    \
-        .module = mod,                                                         \
+        .module = mod.handle,                                                  \
         .pName = "main",                                                       \
     };                                                                         \
     stage_infos[infos_created++] = s_info;                                     \
@@ -1885,7 +2409,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
       .lineWidth = 1.0f,
 
       .cullMode = VK_CULL_MODE_BACK_BIT,
-      .frontFace = VK_FRONT_FACE_CLOCKWISE,
+      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 
       .depthBiasEnable = VK_FALSE,
       .depthBiasConstantFactor = 0.0f,
@@ -1944,7 +2468,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
     p_info.pColorBlendState = &cb_info;
     p_info.pDynamicState = &d_info;
 
-    p_info.layout = p_layout;
+    p_info.layout = p_layout->handle;
 
     p_info.renderPass = *render_pass;
     p_info.subpass = 0;
@@ -1961,11 +2485,12 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
                                               &p_info, NULL, &new_pipeline)) {
     retval = FPX3D_VK_PIPELINE_CREATE_ERROR;
   } else {
-    p->pipeline = new_pipeline;
-    p->layout = p_layout;
+    p->handle = new_pipeline;
+    p->layout = *p_layout;
     p->type = GRAPHICS_PIPELINE;
     p->graphics.shapes = NULL;
     p->graphics.shapeCount = 0;
+    p->graphics.renderPassReference = render_pass;
   }
 
   FREE_SAFE(bindings);
@@ -1986,7 +2511,8 @@ Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
 }
 
 Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
-                                            size_t index) {
+                                            size_t index,
+                                            Fpx3d_Vk_Context *ctx) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
@@ -1997,7 +2523,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
 
   Fpx3d_Vk_Pipeline *p = &lgpu->pipelines[index];
 
-  NULL_CHECK(p->pipeline, FPX3D_VK_PIPELINE_INVALID_ERROR);
+  NULL_CHECK(p->handle, FPX3D_VK_PIPELINE_INVALID_ERROR);
 
   switch (p->type) {
   case GRAPHICS_PIPELINE:
@@ -2010,7 +2536,18 @@ Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
     break;
   }
 
-  vkDestroyPipeline(lgpu->handle, p->pipeline, NULL);
+  {
+    if (NULL != p->bindings.inFlightDescriptorSets)
+      for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+        fpx3d_vk_destroy_descriptor_set(&p->bindings.inFlightDescriptorSets[i],
+                                        lgpu);
+      }
+
+    FREE_SAFE(p->bindings.inFlightDescriptorSets);
+    FREE_SAFE(p->bindings.rawData);
+  }
+
+  vkDestroyPipeline(lgpu->handle, p->handle, NULL);
 
   memset(p, 0, sizeof(*p));
 
@@ -2143,26 +2680,28 @@ VkCommandBuffer *fpx3d_vk_get_commandbuffer_at(Fpx3d_Vk_CommandPool *pool,
   return &pool->buffers[index];
 }
 
-Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *buffer,
-                                                Fpx3d_Vk_Pipeline *pipeline,
-                                                Fpx3d_Vk_Swapchain *swapchain,
-                                                size_t frame_index,
-                                                VkRenderPass *render_pass) {
+Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
+    VkCommandBuffer *buffer, Fpx3d_Vk_Pipeline *pipeline,
+    Fpx3d_Vk_Swapchain *swapchain, size_t frame_index,
+    Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(buffer, FPX3D_ARGS_ERROR);
   NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
   NULL_CHECK(swapchain, FPX3D_ARGS_ERROR);
-  NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(pipeline->pipeline, FPX3D_VK_PIPELINE_INVALID_ERROR);
+  NULL_CHECK(pipeline->handle, FPX3D_VK_PIPELINE_INVALID_ERROR);
+  NULL_CHECK(pipeline->graphics.renderPassReference, FPX3D_VK_NULLPTR_ERROR);
   NULL_CHECK(swapchain->swapchain, FPX3D_VK_SWAPCHAIN_INVALID_ERROR);
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
   if (VK_NULL_HANDLE == *buffer)
     return FPX3D_VK_BAD_BUFFER_HANDLE_ERROR;
 
-  if (VK_NULL_HANDLE == *render_pass)
+  if (VK_NULL_HANDLE == *(pipeline->graphics.renderPassReference))
     return FPX3D_VK_BAD_RENDER_PASS_HANDLE_ERROR;
 
-  if (VK_NULL_HANDLE == pipeline->pipeline)
+  if (VK_NULL_HANDLE == pipeline->handle)
     return FPX3D_VK_PIPELINE_INVALID_ERROR;
 
   if (VK_NULL_HANDLE == swapchain->swapchain)
@@ -2181,7 +2720,7 @@ Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *buffer,
 
   VkRenderPassBeginInfo r_info = {0};
   r_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  r_info.renderPass = *render_pass;
+  r_info.renderPass = *(pipeline->graphics.renderPassReference);
   r_info.framebuffer = swapchain->frames[frame_index].framebuffer;
 
   r_info.renderArea.extent = swapchain->swapchainExtent;
@@ -2213,28 +2752,60 @@ Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *buffer,
     vkCmdSetScissor(*buffer, 0, 1, &scissor);
   }
 
-  vkCmdBindPipeline(*buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    pipeline->pipeline);
+  VkDescriptorSet bind_sets[HIGHEST_DESCRIPTOR_SET_IDX + 1] = {0};
+  bind_sets[PIPELINE_DESCRIPTOR_SET_IDX] =
+      pipeline->bindings.inFlightDescriptorSets[lgpu->frameCounter].handle;
+
+  vkCmdBindPipeline(*buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->handle);
+
+  vkCmdBindDescriptorSets(*buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipeline->layout.handle, PIPELINE_DESCRIPTOR_SET_IDX,
+                          1, bind_sets, 0, NULL);
+
+  Fpx3d_Vk_DescriptorSet *pipeline_ds =
+      &pipeline->bindings.inFlightDescriptorSets[lgpu->frameCounter];
+  memcpy(pipeline_ds->buffer.mapped_memory, pipeline->bindings.rawData,
+         pipeline_ds->buffer.objectCount * pipeline_ds->buffer.stride);
 
   for (size_t i = 0; i < pipeline->graphics.shapeCount; ++i) {
     // TODO: fix hardcoded stuff like instanceCount, firstVertex and other args
 
-    Fpx3d_Vk_ShapeBuffer *shape = &pipeline->graphics.shapes[i];
+    Fpx3d_Vk_Shape *shape = pipeline->graphics.shapes[i];
+
+    if (false == shape->isValid)
+      continue;
+
+    if (NULL != shape->bindings.inFlightDescriptorSets &&
+        NULL != shape->bindings.rawData) {
+      Fpx3d_Vk_DescriptorSet *shape_ds =
+          &shape->bindings.inFlightDescriptorSets[lgpu->frameCounter];
+
+      bind_sets[OBJECT_DESCRIPTOR_SET_IDX] = shape_ds->handle;
+
+      vkCmdBindDescriptorSets(*buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              pipeline->layout.handle,
+                              OBJECT_DESCRIPTOR_SET_IDX, 1, bind_sets, 0, NULL);
+
+      memcpy(shape_ds->buffer.mapped_memory, shape->bindings.rawData,
+             shape_ds->buffer.objectCount * shape_ds->buffer.stride);
+    }
 
     VkDeviceSize offset = 0;
 
-    vkCmdBindVertexBuffers(*buffer, 0, 1, &shape->vertexBuffer.buffer, &offset);
+    vkCmdBindVertexBuffers(*buffer, 0, 1,
+                           &shape->shapeBuffer->vertexBuffer.buffer, &offset);
 
-    if (VK_NULL_HANDLE == shape->indexBuffer.buffer ||
-        VK_NULL_HANDLE == shape->indexBuffer.memory) {
+    if (VK_NULL_HANDLE == shape->shapeBuffer->indexBuffer.buffer ||
+        VK_NULL_HANDLE == shape->shapeBuffer->indexBuffer.memory) {
       // normal draw, using the given vertices
       // because there's no index buffer
-      vkCmdDraw(*buffer, shape->vertexBuffer.objectCount, 1, 0, 0);
+      vkCmdDraw(*buffer, shape->shapeBuffer->vertexBuffer.objectCount, 1, 0, 0);
     } else {
       // we have an index buffer
-      vkCmdBindIndexBuffer(*buffer, shape->indexBuffer.buffer, 0,
+      vkCmdBindIndexBuffer(*buffer, shape->shapeBuffer->indexBuffer.buffer, 0,
                            VK_INDEX_TYPE_UINT32);
-      vkCmdDrawIndexed(*buffer, shape->indexBuffer.objectCount, 1, 0, 0, 0);
+      vkCmdDrawIndexed(*buffer, shape->shapeBuffer->indexBuffer.objectCount, 1,
+                       0, 0, 0);
     }
   }
 
@@ -2246,10 +2817,11 @@ Fpx3d_E_Result fpx3d_vk_record_commandbuffer_at(VkCommandBuffer *buffer,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_submit_commandbuffer_at(VkCommandBuffer *buffer,
-                                                Fpx3d_Vk_LogicalGpu *lgpu,
-                                                size_t frame_index,
-                                                VkQueue *graphics_queue) {
+Fpx3d_E_Result fpx3d_vk_submit_commandbuffer(VkCommandBuffer *buffer,
+                                             Fpx3d_Vk_Context *ctx,
+                                             Fpx3d_Vk_LogicalGpu *lgpu,
+                                             size_t frame_index,
+                                             VkQueue *graphics_queue) {
   NULL_CHECK(buffer, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(graphics_queue, FPX3D_ARGS_ERROR);
@@ -2283,7 +2855,8 @@ Fpx3d_E_Result fpx3d_vk_submit_commandbuffer_at(VkCommandBuffer *buffer,
                                   lgpu->inFlightFences[lgpu->frameCounter]))
     return FPX3D_VK_ERROR;
 
-  lgpu->frameCounter = (lgpu->frameCounter + 1) % MAX_IN_FLIGHT;
+  lgpu->frameCounter =
+      (lgpu->frameCounter + 1) % ctx->constants.maxFramesInFlight;
 
   return FPX3D_SUCCESS;
 }
@@ -2311,6 +2884,9 @@ fpx3d_vk_draw_frame(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
         lgpu->handle, lgpu->currentSwapchain.swapchain, UINT64_MAX,
         lgpu->currentSwapchain.acquireSemaphore, VK_NULL_HANDLE, &image_index);
 
+    // TODO: find another way for refreshing the window. AMD doesn't like to
+    // throw ERROR_OUT_OF_DATE, but nVidia does it all the time. so rely on the
+    // windowing system's resize event instead
     if (VK_ERROR_OUT_OF_DATE_KHR == success) {
       return fpx3d_vk_refresh_current_swapchain(ctx, lgpu);
     } else if (VK_SUCCESS != success && VK_SUBOPTIMAL_KHR != success) {
@@ -2333,18 +2909,17 @@ fpx3d_vk_draw_frame(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
                          0);
 
     {
-      Fpx3d_E_Result success = fpx3d_vk_record_commandbuffer_at(
+      Fpx3d_E_Result success = fpx3d_vk_record_drawing_commandbuffer(
           &lgpu->inFlightCommandPool.buffers[lgpu->frameCounter], &pipelines[i],
-          &lgpu->currentSwapchain, image_index,
-          lgpu->currentSwapchain.renderPassReference);
+          &lgpu->currentSwapchain, image_index, lgpu);
 
       if (FPX3D_SUCCESS != success)
         return success;
     }
 
     if (FPX3D_SUCCESS !=
-        fpx3d_vk_submit_commandbuffer_at(
-            &lgpu->inFlightCommandPool.buffers[lgpu->frameCounter], lgpu,
+        fpx3d_vk_submit_commandbuffer(
+            &lgpu->inFlightCommandPool.buffers[lgpu->frameCounter], ctx, lgpu,
             image_index, graphics_queue))
       return FPX3D_VK_ERROR;
   }
@@ -2389,11 +2964,19 @@ fpx3d_vk_draw_frame(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
 //  START OF STATIC FUNCTION DEFINITIONS
 //
 
+static size_t _align_up(size_t number, size_t alignment) {
+  size_t new_number = number + (alignment - (number % alignment));
+  if (number % alignment == 0)
+    new_number -= alignment;
+
+  return new_number;
+}
+
 static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
                         VkDeviceSize size, VkBufferUsageFlags usage,
                         VkMemoryPropertyFlags mem_flags,
                         VkSharingMode sharing_mode,
-                        struct fpx3d_vulkan_buffer *output_buffer) {
+                        Fpx3d_Vk_Buffer *output_buffer) {
   VkBuffer new_buf = {0};
   VkDeviceMemory new_mem = {0};
 
@@ -2495,9 +3078,8 @@ static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
   return;
 }
 
-static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *lgpu,
-                           struct fpx3d_vulkan_buffer *buf, void *data,
-                           VkDeviceSize size) {
+static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *lgpu, Fpx3d_Vk_Buffer *buf,
+                           void *data, VkDeviceSize size) {
   void *mapped = NULL;
   if (VK_SUCCESS != vkMapMemory(lgpu->handle, buf->memory, 0, size, 0, &mapped))
     return -1;
@@ -2510,9 +3092,8 @@ static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *lgpu,
 }
 
 static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
-                       struct fpx3d_vulkan_buffer *src,
-                       struct fpx3d_vulkan_buffer *dst, VkDeviceSize size,
-                       VkCommandPool transfer_cmd_pool) {
+                       Fpx3d_Vk_Buffer *src, Fpx3d_Vk_Buffer *dst,
+                       VkDeviceSize size, VkCommandPool transfer_cmd_pool) {
   VkCommandBufferAllocateInfo b_info = {0};
   b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   b_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -2550,14 +3131,14 @@ static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
   return 0;
 }
 
-static struct fpx3d_vulkan_buffer
-_new_buffer_with_data(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
-                      void *data, VkDeviceSize size,
-                      VkBufferUsageFlags usage_flags) {
+static Fpx3d_Vk_Buffer _new_buffer_with_data(VkPhysicalDevice dev,
+                                             Fpx3d_Vk_LogicalGpu *lgpu,
+                                             void *data, VkDeviceSize size,
+                                             VkBufferUsageFlags usage_flags) {
   static size_t transfer_queue_index = 0;
 
-  struct fpx3d_vulkan_buffer s_buf = {0};
-  struct fpx3d_vulkan_buffer return_buf = {0};
+  Fpx3d_Vk_Buffer s_buf = {0};
+  Fpx3d_Vk_Buffer return_buf = {0};
 
   NULL_CHECK(dev, return_buf);
   NULL_CHECK(lgpu->handle, return_buf);
@@ -2623,7 +3204,7 @@ _new_buffer_with_data(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
 }
 
 static void _destroy_buffer_object(Fpx3d_Vk_LogicalGpu *lgpu,
-                                   struct fpx3d_vulkan_buffer *buffer) {
+                                   Fpx3d_Vk_Buffer *buffer) {
   if (VK_NULL_HANDLE != buffer->buffer)
     vkDestroyBuffer(lgpu->handle, buffer->buffer, NULL);
 
@@ -2636,10 +3217,10 @@ static void _destroy_buffer_object(Fpx3d_Vk_LogicalGpu *lgpu,
   memset(buffer, 0, sizeof(*buffer));
 }
 
-static struct fpx3d_vulkan_buffer
-_new_vertex_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
-                   Fpx3d_Vk_VertexBundle *v_bundle) {
-  struct fpx3d_vulkan_buffer new_buf =
+static Fpx3d_Vk_Buffer _new_vertex_buffer(VkPhysicalDevice dev,
+                                          Fpx3d_Vk_LogicalGpu *lgpu,
+                                          Fpx3d_Vk_VertexBundle *v_bundle) {
+  Fpx3d_Vk_Buffer new_buf =
       _new_buffer_with_data(dev, lgpu, v_bundle->vertices,
                             v_bundle->vertexCount * v_bundle->vertexDataSize,
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -2653,10 +3234,10 @@ _new_vertex_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
   return new_buf;
 }
 
-static struct fpx3d_vulkan_buffer
-_new_index_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
-                  Fpx3d_Vk_VertexBundle *v_bundle) {
-  struct fpx3d_vulkan_buffer new_buf =
+static Fpx3d_Vk_Buffer _new_index_buffer(VkPhysicalDevice dev,
+                                         Fpx3d_Vk_LogicalGpu *lgpu,
+                                         Fpx3d_Vk_VertexBundle *v_bundle) {
+  Fpx3d_Vk_Buffer new_buf =
       _new_buffer_with_data(dev, lgpu, v_bundle->indices,
                             v_bundle->indexCount * sizeof(v_bundle->indices[0]),
                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
@@ -2676,19 +3257,19 @@ static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
 
   switch (stage) {
   case SHADER_STAGE_VERTEX:
-    module = &set->vertex;
+    module = &set->vertex.handle;
     break;
   case SHADER_STAGE_TESSELATION_CONTROL:
-    module = &set->tesselationControl;
+    module = &set->tesselationControl.handle;
     break;
   case SHADER_STAGE_TESSELATION_EVALUATION:
-    module = &set->tesselationEvaluation;
+    module = &set->tesselationEvaluation.handle;
     break;
   case SHADER_STAGE_GEOMETRY:
-    module = &set->geometry;
+    module = &set->geometry.handle;
     break;
   case SHADER_STAGE_FRAGMENT:
-    module = &set->fragment;
+    module = &set->fragment.handle;
     break;
 
   default:
@@ -2777,14 +3358,14 @@ static void _destroy_lgpu(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
   FPX3D_DEBUG(" - render passes destroyed");
 
   for (size_t i = 0; i < lgpu->pipelineCapacity; ++i) {
-    fpx3d_vk_destroy_pipeline_at(lgpu, i);
+    fpx3d_vk_destroy_pipeline_at(lgpu, i, ctx);
   }
   FREE_SAFE(lgpu->pipelines);
   lgpu->pipelineCapacity = 0;
 
   FPX3D_DEBUG(" - all pipelines destroyed");
 
-  for (size_t i = 0; i < MAX_IN_FLIGHT; ++i) {
+  for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
     vkDestroyFence(lgpu->handle, lgpu->inFlightFences[i], NULL);
   }
   FREE_SAFE(lgpu->inFlightFences);
@@ -3294,6 +3875,86 @@ Fpx3d_E_Result _create_all_available_queues(Fpx3d_Vk_LogicalGpu *lgpu) {
   if (FPX3D_SUCCESS !=
       _create_queues(lgpu, TRANSFER_QUEUE, lgpu->transferQueues.count))
     return FPX3D_VK_QUEUE_RETRIEVE_ERROR;
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result _bind_descriptors_to_buffer(Fpx3d_Vk_DescriptorSet *set,
+                                                  Fpx3d_Vk_Context *ctx,
+                                                  Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(set, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  VkWriteDescriptorSet *w_sets = NULL;
+  w_sets = (VkWriteDescriptorSet *)calloc(set->bindingCount,
+                                          sizeof(VkWriteDescriptorSet));
+  if (NULL == w_sets) {
+    perror("calloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  VkDescriptorBufferInfo **b_infos = NULL;
+  b_infos = (VkDescriptorBufferInfo **)calloc(set->bindingCount,
+                                              sizeof(VkDescriptorBufferInfo *));
+  if (NULL == b_infos) {
+    perror("calloc()");
+    FREE_SAFE(w_sets);
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  size_t offset_in_buffer = 0;
+  for (size_t j = 0; j < set->bindingCount; ++j) {
+    b_infos[j] = (VkDescriptorBufferInfo *)calloc(
+        set->bindings[j].bindingProperties.elementCount,
+        sizeof(VkDescriptorBufferInfo));
+
+    if (NULL == b_infos[j]) {
+      perror("calloc()");
+
+      for (size_t k = 0; k < j; ++k)
+        FREE_SAFE(b_infos[k]);
+
+      FREE_SAFE(b_infos);
+      FREE_SAFE(w_sets);
+
+      return FPX3D_MEMORY_ERROR;
+    }
+
+    for (size_t k = 0; k < set->bindings[j].bindingProperties.elementCount;
+         ++k) {
+      b_infos[j][k].buffer = set->buffer.buffer;
+      b_infos[j][k].offset = offset_in_buffer;
+      b_infos[j][k].range = set->bindings[j].bindingProperties.elementSize;
+
+      offset_in_buffer +=
+          _align_up(set->bindings[j].bindingProperties.elementSize,
+                    ctx->constants.bufferAlignment);
+    }
+
+    VkWriteDescriptorSet *write_set = &w_sets[j];
+    write_set->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write_set->dstSet = set->handle;
+    write_set->dstBinding = j;
+    write_set->dstArrayElement = 0;
+    write_set->descriptorCount =
+        set->bindings[j].bindingProperties.elementCount;
+    write_set->descriptorType =
+        (VkDescriptorType)set->bindings[j].bindingProperties.type;
+
+    write_set->pBufferInfo = b_infos[j];
+    write_set->pImageInfo = NULL;
+    write_set->pTexelBufferView = NULL;
+  }
+
+  vkUpdateDescriptorSets(lgpu->handle, set->bindingCount, w_sets, 0, NULL);
+
+  for (size_t i = 0; i < set->bindingCount; ++i) {
+    FREE_SAFE(b_infos[i]);
+  }
+  FREE_SAFE(b_infos);
+  FREE_SAFE(w_sets);
 
   return FPX3D_SUCCESS;
 }
