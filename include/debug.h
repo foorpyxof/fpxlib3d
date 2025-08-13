@@ -14,6 +14,12 @@
 
 #include <stdio.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#define LONG_FORMAT "ll"
+#else
+#define LONG_FORMAT "l"
+#endif
+
 #define FPX3D_DEBUG(fmt, ...)
 #define FPX3D_WARN(fmt, ...)
 #define FPX3D_ERROR(fmt, ...)

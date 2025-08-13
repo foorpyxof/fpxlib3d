@@ -9,6 +9,17 @@
 #include "vk.h"
 #include "window.h"
 
+#include <signal.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+
+#include <pthread_time.h>
+#include <windows.h>
+
+#define SIGKILL SIGTERM
+
+#endif
+
 #include <GLFW/glfw3.h>
 #include <cglm/affine.h>
 #include <cglm/cam.h>
@@ -16,7 +27,6 @@
 #include <cglm/mat4.h>
 #include <cglm/util.h>
 #include <cglm/vec3.h>
-#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -511,11 +521,13 @@ int main(int argc, const char **argv) {
 
   glfwSetKeyCallback(wnd_ctx.glfwWindow, key_cb);
 
-  float delta = 0.0f;
+  float delta = 0.02f;
 
+#if !(defined(_WIN32) || defined(_WIN64))
   struct timespec frametimes[2] = {0};
 
   clock_gettime(CLOCK_REALTIME, &frametimes[0]);
+#endif
 
   float plane_speed = 1.0f;
   float sign = 1;
@@ -571,11 +583,13 @@ int main(int argc, const char **argv) {
     PRINT_FAILURE(fpx3d_vk_draw_frame(&vk_ctx, lgpu, pipeline, 1,
                                       graphics_queue, present_queue));
 
+#if !(defined(_WIN32) || defined(_WIN64))
     clock_gettime(CLOCK_REALTIME, &frametimes[1]);
     delta =
         (float)(frametimes[1].tv_sec - frametimes[0].tv_sec) +
         (float)(frametimes[1].tv_nsec / 1.0e9 - frametimes[0].tv_nsec / 1.0e9);
     clock_gettime(CLOCK_REALTIME, &frametimes[0]);
+#endif
   }
 
   PRINT_FAILURE(fpx3d_vk_destroy_window(&vk_ctx, dest_callback));

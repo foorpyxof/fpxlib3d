@@ -62,5 +62,8 @@ build/
 
 compile_commands.json
 
+# use this for custom make parameters n stuff
+make/custom.mk
+
 # SPIR-V compiled shaders
 *.spv

@@ -1155,7 +1155,7 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
   vkEnumeratePhysicalDevices(ctx->vkInstance, &gpus_available, gpus);
 
   // auto sort the GPU's based on score, high to low
-  for (uint32_t i = 0; i < gpus_available; ++i) {
+  for (ssize_t i = 0; i < gpus_available; ++i) {
     if (ctx->lgpuExtensionCount > 0 &&
         false == fpx3d_vk_device_extensions_supported(
                      gpus[i], ctx->lgpuExtensions, ctx->lgpuExtensionCount))
@@ -1164,12 +1164,13 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
     VkPhysicalDeviceProperties dev_props = {0};
     vkGetPhysicalDeviceProperties(gpus[i], &dev_props);
 
-    FPX3D_DEBUG("Found GPU #%u - \"%s\"", i, dev_props.deviceName);
+    FPX3D_DEBUG("Found GPU #%" LONG_FORMAT "d - \"%s\"", i,
+                dev_props.deviceName);
 
     int score = scoring_function(ctx, gpus[i]);
 
     // yipee magic
-    for (size_t j = i; j >= 0; --j) {
+    for (ssize_t j = i; j >= 0; --j) {
       if (scored_gpus[j].score < score && 0 < i && j < (gpus_available - 1))
         memcpy(&scored_gpus[j + 1], &scored_gpus[j], sizeof(*scored_gpus));
 
@@ -1210,7 +1211,7 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
     char dash_bar[128] = {0};
     snprintf(dash_bar, MIN(sizeof(dash_bar) - 1, amount_formatted + 2),
              "-----------------------------------------------------------------"
-             "---------------------------------------------------------------");
+             "-------------------------------------------------------------");
     fprintf(stderr, "%s\n%s\n%s\n", dash_bar, print_string, dash_bar);
   }
 
@@ -1361,15 +1362,18 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   new_lgpu.transferQueues.queueFamilyIndex = qfs.t_family.qfIndex;
   new_lgpu.transferQueues.offsetInFamily = qfs.t_family.firstQueueIndex;
 
-  FPX3D_DEBUG(" Selected queue family %d for rendering (%lu queue%s)",
+  FPX3D_DEBUG(" Selected queue family %d for rendering (%" LONG_FORMAT
+              "u queue%s)",
               new_lgpu.graphicsQueues.queueFamilyIndex, g_queues,
               (g_queues != 1) ? "s" : "");
 
-  FPX3D_DEBUG(" Selected queue family %d for presenting (%lu queue%s)",
+  FPX3D_DEBUG(" Selected queue family %d for presenting (%" LONG_FORMAT
+              "u queue%s)",
               new_lgpu.presentQueues.queueFamilyIndex, p_queues,
               (p_queues != 1) ? "s" : "");
 
-  FPX3D_DEBUG(" Selected queue family %d for transfering (%lu queue%s)",
+  FPX3D_DEBUG(" Selected queue family %d for transfering (%" LONG_FORMAT
+              "u queue%s)",
               new_lgpu.transferQueues.queueFamilyIndex, t_queues,
               (t_queues != 1) ? "s" : "");
 
