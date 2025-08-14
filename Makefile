@@ -1,7 +1,7 @@
 .PHONY: all prep release debug libs test clean shaders
 
 # NOTE: remember to `make clean` after switching target OS
-WINDOWS := true
+# WINDOWS := true
 
 include make/*.mk
 

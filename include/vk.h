@@ -110,10 +110,19 @@ struct _fpx3d_vk_sc_prop {
   VkPresentModeKHR presentMode;
 };
 
+struct _fpx3d_vk_sc_req {
+  VkSurfaceFormatKHR *surfaceFormats;
+  size_t surfaceFormatsCount;
+
+  VkPresentModeKHR *presentModes;
+  size_t presentModesCount;
+};
+
 struct _fpx3d_vk_sc {
   VkSwapchainKHR swapchain;
   VkExtent2D swapchainExtent;
 
+  Fpx3d_Vk_SwapchainRequirements requirements;
   Fpx3d_Vk_SwapchainProperties properties;
 
   VkSemaphore acquireSemaphore;
@@ -125,17 +134,6 @@ struct _fpx3d_vk_sc {
   size_t frameCount;
 
   Fpx3d_Vk_Swapchain *nextInList;
-};
-
-// TODO: rethink(?)
-struct _fpx3d_vk_sc_req {
-  VkSurfaceCapabilitiesKHR surfaceCapabilities;
-
-  VkSurfaceFormatKHR *surfaceFormats;
-  size_t surfaceFormatsCount;
-
-  VkPresentModeKHR *presentModes;
-  size_t presentModesCount;
 };
 
 Fpx3d_E_Result
@@ -151,7 +149,7 @@ fpx3d_vk_get_swapchain_support(Fpx3d_Vk_Context *ctx, VkPhysicalDevice dev,
 
 Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *,
                                          Fpx3d_Vk_LogicalGpu *,
-                                         Fpx3d_Vk_SwapchainProperties);
+                                         Fpx3d_Vk_SwapchainRequirements);
 Fpx3d_Vk_Swapchain *fpx3d_vk_get_current_swapchain(Fpx3d_Vk_LogicalGpu *);
 Fpx3d_E_Result fpx3d_vk_destroy_current_swapchain(Fpx3d_Vk_LogicalGpu *);
 Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *,

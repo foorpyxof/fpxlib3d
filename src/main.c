@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+#ifdef DEBUG
+#define FPX3D_DEBUG_ENABLE
+#endif
+
 #include "main.h"
 #include "debug.h"
 #include "fpx3d.h"
@@ -47,7 +51,7 @@
 vec3 camera_pos = {0.7f, 3.3f, 2.6f};
 vec3 camera_target = {0.0f, 0.0f, 0.0f};
 
-float fov = 45.0f;
+float fov = 80.0f;
 
 float move_speed = 2.0f;
 
@@ -253,8 +257,6 @@ VkCommandBuffer *transfer_buffer = NULL;
 
 VkRenderPass *render_pass = NULL;
 
-Fpx3d_Vk_SwapchainProperties swapchain_properties = {0};
-
 void dest_callback(void *custom_ptr) {
   fprintf(stderr, "%s\n", (const char *)custom_ptr);
 
@@ -324,9 +326,7 @@ void vulkan_setup(void) {
   graphics_queue = fpx3d_vk_get_queue_at(lgpu, 0, GRAPHICS_QUEUE);
   present_queue = fpx3d_vk_get_queue_at(lgpu, 0, PRESENT_QUEUE);
 
-  swapchain_properties =
-      fpx3d_vk_get_swapchain_support(&vk_ctx, vk_ctx.physicalGpu, sc_reqs);
-  FATAL_FAIL(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, swapchain_properties));
+  FATAL_FAIL(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, sc_reqs));
 
   PRINT_FAILURE(fpx3d_vk_allocate_commandpools(lgpu, 1));
   PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 0, TRANSFER_POOL));
@@ -532,18 +532,48 @@ int main(int argc, const char **argv) {
   float plane_speed = 1.0f;
   float sign = 1;
 
+  if (argc > 1 && NULL != argv) {
+    fprintf(stderr, "\033[2J\033[H");
+    fprintf(stderr, "Delta: %f\n", delta);
+    fprintf(stderr, "FPS: %d\n", (int)(1 / delta));
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Move speed: %f\n", move_speed);
+    fprintf(stderr, "FOV: %ddeg\n", (int)fov);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Camera position:\n");
+    glm_vec3_print(camera_pos, stdout);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Movement keys:\n"
+                    "     [W]\n"
+                    "  [A][S][D]\n"
+                    "  For moving the camera's absolute position along the "
+                    "horizontal plane\n"
+                    "  Please note that the camera is permanently focused on "
+                    "(0, 0, 0)\n  and the camera moves on fixed axes. Not "
+                    "towards the direction it faces\n"
+                    "\n"
+                    "  [Q]   [E]\n"
+                    "  For moving up and down\n"
+                    "\n"
+                    "  [O][P]\n"
+                    "  For increasing and decreasing the FOV respectively\n"
+                    "\n"
+                    "  [-][+]\n"
+                    "  For decreasing/increasing camera movement speed\n");
+  }
+
   while (!glfwWindowShouldClose(vk_ctx.windowContext->glfwWindow)) {
     glfwPollEvents();
 
     if (argc > 1 && NULL != argv) {
-      fprintf(stderr, "\033[2J\033[H");
-      fprintf(stderr, "Delta: %f\n", delta);
-      fprintf(stderr, "FPS: %d\n", (int)(1 / delta));
-      fprintf(stderr, "\n");
-      fprintf(stderr, "Move speed: %f\n", move_speed);
-      fprintf(stderr, "FOV: %ddeg\n", (int)fov);
-      fprintf(stderr, "\n");
-      fprintf(stderr, "Camera position:\n");
+      fprintf(stderr, "\033[H");
+      fprintf(stderr, "\033[2KDelta: %f\n", delta);
+      fprintf(stderr, "\033[2KFPS: %d\n", (int)(1 / delta));
+      fprintf(stderr, "\033[2K\n");
+      fprintf(stderr, "\033[2KMove speed: %f\n", move_speed);
+      fprintf(stderr, "\033[2KFOV: %ddeg\n", (int)fov);
+      fprintf(stderr, "\033[2K\n");
+      fprintf(stderr, "\033[2KCamera position:\n");
       glm_vec3_print(camera_pos, stdout);
     }
 
@@ -563,16 +593,18 @@ int main(int argc, const char **argv) {
     fpx3d_vk_update_pipeline_descriptor(pipeline, 0, 0, &view_projection,
                                         &vk_ctx);
 
+#define PLANE_MAX_SPEED 8.0f
+
     vec3 tran = {0.0f, -plane_speed, 0.0f};
-    plane_speed += 0.5f * delta * sign;
-    if (plane_speed > 2.0f)
+    plane_speed += 2.5f * delta * sign;
+    if (plane_speed > PLANE_MAX_SPEED)
       sign = -1.0f;
-    else if (plane_speed < -2.0f)
+    else if (plane_speed < -PLANE_MAX_SPEED)
       sign = 1.0f;
 
     glm_vec3_scale(tran, delta * 3.0f, tran);
     glm_translate(square_model.model, tran);
-    glm_rotate(square_model.model, glm_rad(360.0f * delta), right);
+    glm_rotate(square_model.model, glm_rad(1080.0f * delta), right);
     fpx3d_vk_update_shape_descriptor(&square_shape, 0, 0, &square_model,
                                      &vk_ctx);
 

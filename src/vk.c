@@ -1817,9 +1817,9 @@ Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
-                                         Fpx3d_Vk_LogicalGpu *lgpu,
-                                         Fpx3d_Vk_SwapchainProperties props) {
+Fpx3d_E_Result
+fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
+                          Fpx3d_Vk_SwapchainRequirements sc_reqs) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
   NULL_CHECK(ctx->vkSurface, FPX3D_VK_BAD_VULKAN_SURFACE_ERROR);
@@ -1827,6 +1827,9 @@ Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
 
   NULL_CHECK(lgpu->graphicsQueues.queues, FPX3D_NO_CAPACITY_ERROR);
   NULL_CHECK(lgpu->presentQueues.queues, FPX3D_NO_CAPACITY_ERROR);
+
+  Fpx3d_Vk_SwapchainProperties props =
+      fpx3d_vk_get_swapchain_support(ctx, ctx->physicalGpu, sc_reqs);
 
   if (0 == lgpu->graphicsQueues.count || 0 == lgpu->graphicsQueues.count)
     return FPX3D_NO_CAPACITY_ERROR;
@@ -1883,6 +1886,11 @@ Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
   VkResult success =
       vkCreateSwapchainKHR(lgpu->handle, &s_info, NULL, &new_swapchain);
 
+  if (VK_SUCCESS != success) {
+    FPX3D_ERROR("Error while creating a new swapchain. Code: %d.", success);
+    return FPX3D_VK_SWAPCHAIN_CREATE_ERROR;
+  }
+
   // whatever happens here, if there was an old_swapchain, it is now
   // retired.
   if (VK_NULL_HANDLE != lgpu->currentSwapchain.swapchain)
@@ -1890,11 +1898,6 @@ Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
       _destroy_swapchain(lgpu, &lgpu->currentSwapchain, true);
       return FPX3D_VK_ERROR;
     }
-
-  if (VK_SUCCESS != success) {
-    FPX3D_DEBUG("Error while creating a new swapchain. Code: %d.", success);
-    return FPX3D_VK_SWAPCHAIN_CREATE_ERROR;
-  }
 
   uint32_t frame_count = 0;
   VkImage *images = NULL;
@@ -2023,6 +2026,7 @@ Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx,
 
 #undef DEINITIALIZE_SWAPCHAIN
 
+  lgpu->currentSwapchain.requirements = sc_reqs;
   lgpu->currentSwapchain.properties = props;
   lgpu->currentSwapchain.imageFormat = props.surfaceFormat.format;
   lgpu->currentSwapchain.swapchain = new_swapchain;
@@ -2065,7 +2069,7 @@ Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *ctx,
   Fpx3d_Vk_Swapchain *old_chain = fpx3d_vk_get_current_swapchain(lgpu);
   VkRenderPass *pass = old_chain->renderPassReference;
   vkDeviceWaitIdle(lgpu->handle);
-  fpx3d_vk_create_swapchain(ctx, lgpu, lgpu->currentSwapchain.properties);
+  fpx3d_vk_create_swapchain(ctx, lgpu, lgpu->currentSwapchain.requirements);
   Fpx3d_Vk_Swapchain *new_chain = fpx3d_vk_get_current_swapchain(lgpu);
   fpx3d_vk_create_framebuffers(new_chain, lgpu, pass);
 
