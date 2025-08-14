@@ -46,6 +46,9 @@ typedef struct _fpx3d_vk_context Fpx3d_Vk_Context;
 
 Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *, Fpx3d_Wnd_Context *);
 
+// don't pass VK_LAYER_KHRONOS_validation in the context. this is automatically
+// enabled in the `debug` build of the library, and enabling it in your call to
+// create a window here will only cause issues. Fix pending
 Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *);
 Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *,
                                        void (*destruction_callback)(void *));
@@ -624,8 +627,8 @@ struct _fpx3d_vk_context {
   const char **lgpuExtensions;
   size_t lgpuExtensionCount;
 
-  const char **validationLayers;
-  size_t validationLayersCount;
+  const char **instanceLayers;
+  size_t instanceLayerCount;
 
   VkInstance vkInstance;
   VkSurfaceKHR vkSurface;
@@ -675,8 +678,8 @@ struct _fpx3d_vk_lgpu {
   uint16_t frameCounter;
 };
 
-bool fpx3d_vk_validation_layers_supported(const char **layers,
-                                          size_t layer_count);
+bool fpx3d_vk_instance_layers_supported(const char **layers,
+                                        size_t layer_count);
 bool fpx3d_vk_device_extensions_supported(VkPhysicalDevice,
                                           const char **extensions,
                                           size_t extension_count);

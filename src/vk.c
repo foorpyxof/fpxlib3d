@@ -672,7 +672,7 @@ Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
                                             Fpx3d_Vk_E_ShaderStage stage) {
   Fpx3d_Vk_SpirvFile retval = {0};
 
-  FILE *fp = fopen(filename, "r");
+  FILE *fp = fopen(filename, "rb");
   if (NULL == fp) {
     perror("fopen()");
     FPX3D_ERROR("Could not open file \"%s\". Does it exist in this location?",
@@ -708,7 +708,7 @@ Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
 
   rewind(fp);
 
-  FPX3D_DEBUG("Read %d bytes from file \"%s\"", size, filename);
+  FPX3D_DEBUG("Found file \"%s\" (%d bytes)", filename, size);
 
   // align to 4 bytes (sizeof uint32_t) because the shader module reads it
   // using a uint32_t pointer for some reason
@@ -720,8 +720,19 @@ Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
     return retval;
   }
 
-  if (size > (int)fread(retval.buffer, 1, size, fp)) {
-    FPX3D_WARN("Read too little from SPIR-V file");
+  size_t readcount = fread(retval.buffer, 1, size, fp);
+  if (size > (int)readcount) {
+    FPX3D_WARN(
+        "Read too little from SPIR-V file (expected %d; got %" LONG_FORMAT "u)",
+        size, readcount);
+
+    int has_eof = feof(fp);
+    int has_err = ferror(fp);
+
+    if (has_eof || has_err) {
+      FPX3D_WARN("File EOF? -> %d | File ERR? -> %d", has_eof, has_err);
+    }
+
     FREE_SAFE(retval.buffer);
     fclose(fp);
     return retval;
@@ -827,8 +838,8 @@ fpx3d_vk_destroy_shadermodules(Fpx3d_Vk_ShaderModuleSet *to_destroy,
 
 #undef DESTROY_IF_EXISTS
 
-bool fpx3d_vk_validation_layers_supported(const char **layers,
-                                          size_t layer_count) {
+bool fpx3d_vk_instance_layers_supported(const char **layers,
+                                        size_t layer_count) {
   if (1 > layer_count)
     return true;
 
@@ -995,24 +1006,30 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
     return FPX3D_WND_INVALID_DETAILS_ERROR;
 
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
-  const char **val_layers = ctx->validationLayers;
-  size_t val_layer_count = ctx->validationLayersCount;
+  const char *val_layer_ext = "VK_LAYER_KHRONOS_validation";
 
-  bool vl_supported = false;
+  bool vl_supported = true;
 
-  // we check for the queried validation layers, if need be.
-  // if no layers are set to be queried, we just keep going
+  if (false == fpx3d_vk_instance_layers_supported(&val_layer_ext, 1)) {
 
-  if (NULL != val_layers && 0 < val_layer_count) {
-    if (false ==
-        fpx3d_vk_validation_layers_supported(val_layers, val_layer_count)) {
+    FPX3D_WARN("Validation layers are not available. Proceeding without. "
+               "Have you installed the SDK?");
 
-      FPX3D_WARN("Validation layers- though requested- were not available");
-    }
-
-    vl_supported = true;
+    vl_supported = false;
   }
 #endif
+
+  // we check for the queried instance layers, if need be.
+  // if no layers are set to be queried, we just keep going
+
+  if (NULL != ctx->instanceLayers && 0 < ctx->instanceLayerCount) {
+    if (false == fpx3d_vk_instance_layers_supported(ctx->instanceLayers,
+                                                    ctx->instanceLayerCount)) {
+      FPX3D_WARN("Requested instance layers not available. Aborting "
+                 "instance+window creation.");
+      return FPX3D_VK_BAD_INSTANCE_LAYERS;
+    }
+  }
 
   VkInstanceCreateInfo inst_info = {0};
 
@@ -1031,16 +1048,31 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
   inst_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   inst_info.pApplicationInfo = &ctx->appInfo;
 
+  size_t layer_count = ctx->instanceLayerCount;
+  size_t alloc_count = layer_count;
+  size_t layer_iter = 0;
+
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
-  if (true == vl_supported) {
-    inst_info.enabledLayerCount = ctx->validationLayersCount;
-    inst_info.ppEnabledLayerNames = val_layers;
-  } else {
+  if (vl_supported)
+    ++alloc_count;
 #endif
-    inst_info.enabledLayerCount = 0;
+
+  const char **total_layers =
+      (const char **)malloc(sizeof(const char **) * alloc_count);
+
+  for (; layer_iter < layer_count; ++layer_iter) {
+    total_layers[layer_iter] = ctx->instanceLayers[layer_iter];
+  }
+
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
+  if (vl_supported) {
+    ++layer_count;
+    total_layers[layer_iter] = val_layer_ext;
   }
 #endif
+
+  inst_info.enabledLayerCount = layer_count;
+  inst_info.ppEnabledLayerNames = total_layers;
 
   uint32_t glfw_extensions_count = 0;
   const char **glfw_extensions = NULL;
@@ -1053,6 +1085,9 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
   inst_info.ppEnabledExtensionNames = glfw_extensions;
 
   VkResult res = vkCreateInstance(&inst_info, NULL, &ctx->vkInstance);
+
+  FREE_SAFE(total_layers);
+
   if (VK_SUCCESS != res)
     return FPX3D_VK_INSTANCE_CREATE_ERROR;
 
@@ -1266,6 +1301,8 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
     priorities[i] = 1.0f;
   }
 
+  FPX3D_DEBUG("Initializing Logical GPU creation");
+
   VkDeviceQueueCreateInfo infos[8] = {0};
   size_t infos_count = 0;
 
@@ -1362,23 +1399,23 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   new_lgpu.transferQueues.queueFamilyIndex = qfs.t_family.qfIndex;
   new_lgpu.transferQueues.offsetInFamily = qfs.t_family.firstQueueIndex;
 
-  FPX3D_DEBUG(" Selected queue family %d for rendering (%" LONG_FORMAT
+  FPX3D_DEBUG(" - Selected queue family %d for rendering (%" LONG_FORMAT
               "u queue%s)",
               new_lgpu.graphicsQueues.queueFamilyIndex, g_queues,
               (g_queues != 1) ? "s" : "");
 
-  FPX3D_DEBUG(" Selected queue family %d for presenting (%" LONG_FORMAT
+  FPX3D_DEBUG(" - Selected queue family %d for presenting (%" LONG_FORMAT
               "u queue%s)",
               new_lgpu.presentQueues.queueFamilyIndex, p_queues,
               (p_queues != 1) ? "s" : "");
 
-  FPX3D_DEBUG(" Selected queue family %d for transfering (%" LONG_FORMAT
+  FPX3D_DEBUG(" - Selected queue family %d for transfering (%" LONG_FORMAT
               "u queue%s)",
               new_lgpu.transferQueues.queueFamilyIndex, t_queues,
               (t_queues != 1) ? "s" : "");
 
   for (size_t i = 0; i < infos_count; ++i) {
-    FPX3D_DEBUG(" Requesting %u queue%s from queue family %u",
+    FPX3D_DEBUG(" - Requesting %u queue%s from queue family %u",
                 infos[i].queueCount,
                 CONDITIONAL(infos[i].queueCount != 1, "s", ""),
                 infos[i].queueFamilyIndex);
@@ -1393,15 +1430,10 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   d_info.enabledExtensionCount = ctx->lgpuExtensionCount;
   d_info.ppEnabledExtensionNames = ctx->lgpuExtensions;
 
-// no longer required, but used for
-// compatibility with older impl. of Vulkan
-#define FPX_VK_USE_VALIDATION_LAYERS
-#ifdef FPX_VK_USE_VALIDATION_LAYERS
-  d_info.enabledLayerCount = ctx->validationLayersCount;
-  d_info.ppEnabledLayerNames = ctx->validationLayers;
-#else
-  d_info.enabledLayerCount = 0;
-#endif
+  // no longer required, but used for
+  // compatibility with older impl. of Vulkan
+  d_info.enabledLayerCount = ctx->instanceLayerCount;
+  d_info.ppEnabledLayerNames = ctx->instanceLayers;
 
   VkResult res =
       vkCreateDevice(ctx->physicalGpu, &d_info, NULL, &new_lgpu.handle);
@@ -1409,7 +1441,8 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   FREE_SAFE(priorities);
 
   if (VK_SUCCESS != res) {
-    FPX3D_DEBUG("vkCreateDevice() failed: error code %d", res);
+    FPX3D_WARN("vkCreateDevice() failed: error code %d", res);
+    FPX3D_ERROR("Failed to create Logical GPU");
 
     FREE_SAFE(new_lgpu.graphicsQueues.queues);
     FREE_SAFE(new_lgpu.presentQueues.queues);
@@ -1480,6 +1513,8 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
 
   new_lgpu.features = features;
   ctx->logicalGpus[index] = new_lgpu;
+
+  FPX3D_DEBUG(" - Logical GPU created!");
 
   return FPX3D_SUCCESS;
 }
@@ -2415,8 +2450,8 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
       .polygonMode = VK_POLYGON_MODE_FILL,
       .lineWidth = 1.0f,
 
-      // .cullMode = VK_CULL_MODE_BACK_BIT,
-      .cullMode = VK_CULL_MODE_NONE,
+      .cullMode = VK_CULL_MODE_BACK_BIT,
+      // .cullMode = VK_CULL_MODE_NONE,
       .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 
       .depthBiasEnable = VK_FALSE,

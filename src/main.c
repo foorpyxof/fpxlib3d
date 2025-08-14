@@ -58,6 +58,7 @@ float move_speed = 2.0f;
 struct model_descriptor triangle_model = {0};
 struct model_descriptor square_model = {0};
 struct model_descriptor square_dupe_model = {0};
+struct model_descriptor pyramid_model = {0};
 
 bool key_states[GLFW_KEY_LAST + 1] = {0};
 void key_cb(GLFWwindow *wnd, int key, int scancode, int action, int mods) {
@@ -123,7 +124,6 @@ void dest_callback(void *);
 
 Fpx3d_Vk_Context vk_ctx = {0};
 
-const char *val_layers[] = {"VK_LAYER_KHRONOS_validation"};
 const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 struct shape_buffer *shapes = NULL;
@@ -233,9 +233,11 @@ Fpx3d_Vk_DescriptorSetLayout *ds_layout_shape = &ds_layouts[1];
 
 Fpx3d_Vk_ShapeBuffer triangle_buffer = {0};
 Fpx3d_Vk_ShapeBuffer square_buffer = {0};
+Fpx3d_Vk_ShapeBuffer pyramid_buffer = {0};
 Fpx3d_Vk_Shape triangle_shape = {0};
 Fpx3d_Vk_Shape square_shape = {0};
 Fpx3d_Vk_Shape square_dupe = {0};
+Fpx3d_Vk_Shape pyramid_shape = {0};
 
 // ----- QUEUES
 
@@ -268,9 +270,11 @@ void dest_callback(void *custom_ptr) {
   PRINT_FAILURE(fpx3d_vk_destroy_shape(&triangle_shape, &vk_ctx, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_shape(&square_shape, &vk_ctx, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_shape(&square_dupe, &vk_ctx, lgpu));
+  PRINT_FAILURE(fpx3d_vk_destroy_shape(&pyramid_shape, &vk_ctx, lgpu));
 
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &triangle_buffer));
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &square_buffer));
+  PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &pyramid_buffer));
 
   PRINT_FAILURE(fpx3d_vk_destroy_descriptor_set_layout(ds_layout_global, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_descriptor_set_layout(ds_layout_shape, lgpu));
@@ -304,8 +308,8 @@ void vulkan_setup(void) {
 
     vk_ctx.appInfo = app_info;
 
-    vk_ctx.validationLayers = val_layers;
-    vk_ctx.validationLayersCount = ARRAY_SIZE(val_layers);
+    vk_ctx.instanceLayers = NULL;
+    vk_ctx.instanceLayerCount = 0;
     vk_ctx.lgpuExtensions = extensions;
     vk_ctx.lgpuExtensionCount = ARRAY_SIZE(extensions);
 
@@ -369,7 +373,7 @@ Fpx3d_Vk_VertexBinding vertex_binding = {0};
 void create_shapes(void) {
   Fpx3d_Vk_Vertex triangle[] = {
       {.position = {0.0f, -0.5f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}},
-      {.position = {0.5f, 0.5f, -0.0f}, .color = {0.0f, 1.0f, 0.0f}},
+      {.position = {0.5f, 0.5f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}},
       {.position = {-0.5f, 0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}}};
 
   Fpx3d_Vk_Vertex square[] = {
@@ -378,28 +382,46 @@ void create_shapes(void) {
       {.position = {0.25f, 0.25f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}},
       {.position = {-0.25f, 0.25f, 0.0f}, .color = {1.0f, 1.0f, 1.0f}}};
 
+  Fpx3d_Vk_Vertex pyramid[] = {
+      {.position = {0.0f, 0.0f, 1.5f}, .color = {1.0f, 1.0f, 1.0f}},
+      {.position = {-0.5f, -0.5f, 0.5f}, .color = {0.0f, 0.0f, 0.0f}},
+      {.position = {-0.5f, 0.5f, 0.5f}, .color = {0.0f, 0.0f, 1.0f}},
+      {.position = {0.5f, 0.5f, 0.5f}, .color = {0.0f, 1.0f, 0.0f}},
+      {.position = {0.5f, -0.5f, 0.5f}, .color = {1.0f, 0.0f, 0.0f}}};
+
   Fpx3d_Vk_VertexBundle triangle_bundle = {0};
   Fpx3d_Vk_VertexBundle square_bundle = {0};
+  Fpx3d_Vk_VertexBundle pyramid_bundle = {0};
 
   PRINT_FAILURE(fpx3d_vk_allocate_vertices(
       &triangle_bundle, ARRAY_SIZE(triangle), sizeof(triangle[0])));
   PRINT_FAILURE(fpx3d_vk_allocate_vertices(&square_bundle, ARRAY_SIZE(square),
                                            sizeof(square[0])));
+  PRINT_FAILURE(fpx3d_vk_allocate_vertices(&pyramid_bundle, ARRAY_SIZE(pyramid),
+                                           sizeof(pyramid[0])));
 
   PRINT_FAILURE(fpx3d_vk_append_vertices(&triangle_bundle, triangle,
                                          ARRAY_SIZE(triangle)));
   PRINT_FAILURE(
       fpx3d_vk_append_vertices(&square_bundle, square, ARRAY_SIZE(square)));
+  PRINT_FAILURE(
+      fpx3d_vk_append_vertices(&pyramid_bundle, pyramid, ARRAY_SIZE(pyramid)));
 
   uint32_t square_indices[] = {0, 1, 2, 2, 0, 3};
+  uint32_t pyramid_indices[] = {1, 2, 3, 3, 1, 4, 1, 0, 2,
+                                3, 0, 2, 3, 0, 4, 1, 0, 4};
 
   PRINT_FAILURE(fpx3d_vk_set_indices(&square_bundle, square_indices,
                                      ARRAY_SIZE(square_indices)));
+  PRINT_FAILURE(fpx3d_vk_set_indices(&pyramid_bundle, pyramid_indices,
+                                     ARRAY_SIZE(pyramid_indices)));
 
   FATAL_FAIL(fpx3d_vk_create_shapebuffer(&vk_ctx, lgpu, &triangle_bundle,
                                          &triangle_buffer));
   FATAL_FAIL(fpx3d_vk_create_shapebuffer(&vk_ctx, lgpu, &square_bundle,
                                          &square_buffer));
+  FATAL_FAIL(fpx3d_vk_create_shapebuffer(&vk_ctx, lgpu, &pyramid_bundle,
+                                         &pyramid_buffer));
 
   vertex_binding.sizePerVertex = sizeof(Fpx3d_Vk_Vertex);
   vertex_binding.attributeCount = ARRAY_SIZE(vertex_attributes);
@@ -407,8 +429,10 @@ void create_shapes(void) {
 
   triangle_shape = fpx3d_vk_create_shape(&triangle_buffer);
   square_shape = fpx3d_vk_create_shape(&square_buffer);
+  pyramid_shape = fpx3d_vk_create_shape(&pyramid_buffer);
 
-  if (!(triangle_shape.isValid && square_shape.isValid)) {
+  if (!(triangle_shape.isValid && square_shape.isValid &&
+        pyramid_shape.isValid)) {
     FPX3D_ERROR("BAD SHAPE CREATION");
     raise(SIGTERM);
   }
@@ -454,6 +478,9 @@ void create_shape_descriptors(void) {
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
       &square_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
       ds_layout_shape, &vk_ctx, lgpu));
+  FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
+      &pyramid_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
+      ds_layout_shape, &vk_ctx, lgpu));
 }
 
 void create_duplicate_shapes(void) {
@@ -471,6 +498,11 @@ void create_pipeline_descriptors(void) {
       lgpu));
 }
 
+void destroy_vulkan(void) {
+  fpx3d_vk_destroy_window(&vk_ctx, dest_callback);
+  exit(EXIT_SUCCESS);
+}
+
 int main(int argc, const char **argv) {
   signal(SIGINT, sig_catcher);
   signal(SIGABRT, sig_catcher);
@@ -485,7 +517,8 @@ int main(int argc, const char **argv) {
   create_duplicate_shapes();
   create_pipeline_descriptors();
 
-  Fpx3d_Vk_Shape *shapes[] = {&triangle_shape, &square_shape, &square_dupe};
+  Fpx3d_Vk_Shape *shapes[] = {&pyramid_shape, &triangle_shape, &square_shape,
+                              &square_dupe};
 
   PRINT_FAILURE(
       fpx3d_vk_assign_shapes_to_pipeline(shapes, ARRAY_SIZE(shapes), pipeline));
@@ -506,14 +539,20 @@ int main(int argc, const char **argv) {
   glm_mat4_identity(triangle_model.model);
   glm_mat4_identity(square_model.model);
   glm_mat4_identity(square_dupe_model.model);
+  glm_mat4_identity(pyramid_model.model);
 
   vec3 dupe_pos = {-0.3f, 0.5f, 0.1f};
   glm_translate(square_dupe_model.model, dupe_pos);
+
+  vec3 pyramid_pos = {0.0f, 0.0f, 1.0f};
+  glm_translate(pyramid_model.model, pyramid_pos);
 
   fpx3d_vk_update_shape_descriptor(&triangle_shape, 0, 0, &triangle_model,
                                    &vk_ctx);
   fpx3d_vk_update_shape_descriptor(&square_shape, 0, 0, &square_model, &vk_ctx);
   fpx3d_vk_update_shape_descriptor(&square_dupe, 0, 0, &square_dupe_model,
+                                   &vk_ctx);
+  fpx3d_vk_update_shape_descriptor(&pyramid_shape, 0, 0, &pyramid_model,
                                    &vk_ctx);
 
   if (NULL == vk_ctx.windowContext->glfwWindow)
@@ -610,6 +649,10 @@ int main(int argc, const char **argv) {
 
     glm_rotate(square_dupe_model.model, glm_rad(180.0f * delta), up);
     fpx3d_vk_update_shape_descriptor(&square_dupe, 0, 0, &square_dupe_model,
+                                     &vk_ctx);
+
+    glm_rotate(pyramid_model.model, glm_rad(45.0f * delta), up);
+    fpx3d_vk_update_shape_descriptor(&pyramid_shape, 0, 0, &pyramid_model,
                                      &vk_ctx);
 
     PRINT_FAILURE(fpx3d_vk_draw_frame(&vk_ctx, lgpu, pipeline, 1,

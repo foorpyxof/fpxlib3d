@@ -14,7 +14,7 @@ LDFLAGS := -lm
 ifeq ($(WINDOWS), true)
 	TARGET := win32
 
-	include make/windows/*.mk
+	-include make/windows/*.mk
 
 	CC := $(CC_WIN32)
 	CFLAGS += -mwindows -DVK_USE_PLATFORM_WIN32_KHR
