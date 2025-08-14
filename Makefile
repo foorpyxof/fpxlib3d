@@ -44,7 +44,7 @@ INCLUDE_DIRS := include modules $(EXTRA_INCLUDE_DIRS)
 LIB_DIRS := $(EXTRA_LIB_DIRS)
 
 CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I$(dir))
-CFLAGS += $(foreach dir,$(LIB_DIRS),-L$(dir))
+LDFLAGS += $(foreach dir,$(LIB_DIRS),-L$(dir))
 
 RELEASE_APP := $(BUILD_FOLDER)/release$(EXE_EXT)
 DEBUG_APP := $(BUILD_FOLDER)/debug$(EXE_EXT)
