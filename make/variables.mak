@@ -1,0 +1,31 @@
+RELEASE_FLAGS := -O3
+
+DEBUG_FLAGS := -DDEBUG -g -O0
+
+# DEBUG_FLAGS += -fsanitize=address
+# ^^^ uncomment for ASAN
+
+
+# !!! ADD THESE VARIABLES ON YOUR OWN IF NECESSARY (FOR EXAMPLE WHEN CROSS COMPILING) !!!
+EXTRA_INCLUDE_DIRS += $(VULKAN_INCLUDE_DIRECTORY) $(GLFW_INCLUDE_DIRECTORY) $(CGLM_INCLUDE_DIRECTORY)
+EXTRA_LIB_DIRS += $(VULKAN_LIBRARY_DIRECTORY) $(GLFW_LIBRARY_DIRECTORY)
+
+
+# some folders
+BUILD_FOLDER := build
+SOURCE_FOLDER := src
+MODULES_DIR := modules
+
+INCLUDE_DIRS := include $(MODULES_DIR) $(EXTRA_INCLUDE_DIRS)
+LIB_DIRS := $(EXTRA_LIB_DIRS)
+
+# comp/link flags
+CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I$(dir))
+LDFLAGS += $(foreach dir,$(LIB_DIRS),-L$(dir))
+
+
+# some file name definitions, for targets
+RELEASE_APP := $(BUILD_FOLDER)/release-$(EXE_EXT)
+DEBUG_APP := $(BUILD_FOLDER)/debug-$(EXE_EXT)
+
+MAIN_C := $(SOURCE_FOLDER)/main.c

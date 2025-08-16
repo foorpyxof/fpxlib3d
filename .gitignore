@@ -60,6 +60,9 @@ dkms.conf
 # build files
 build/
 
+# archive storage
+archives/
+
 compile_commands.json
 
 # use this for custom make parameters n stuff
