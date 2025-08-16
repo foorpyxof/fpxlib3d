@@ -6,14 +6,12 @@
 #ifdef DEBUG
 #define FPX3D_DEBUG_ENABLE
 #endif
-
-#include "main.h"
 #include "debug.h"
+
 #include "fpx3d.h"
+#include "main.h"
 #include "vk.h"
 #include "window.h"
-
-#include <signal.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 
@@ -25,22 +23,23 @@
 #endif
 
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb/stb_image.h>
+#include "stb/stb_image.h"
 
+#include "cglm/affine.h"
+#include "cglm/cam.h"
+#include "cglm/io.h"
+#include "cglm/mat4.h"
+#include "cglm/util.h"
+#include "cglm/vec3.h"
 #include <GLFW/glfw3.h>
-#include <cglm/affine.h>
-#include <cglm/cam.h>
-#include <cglm/io.h>
-#include <cglm/mat4.h>
-#include <cglm/util.h>
-#include <cglm/vec3.h>
+
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
-#include <vulkan/vulkan_core.h>
 
 #define LOGICAL_GPU_COUNT 1
 
@@ -531,6 +530,9 @@ void destroy_vulkan(void) {
 }
 
 int main(int argc, const char **argv) {
+  fprintf(stderr, " - - - - - Build date and time: %s at %s - - - - -\n",
+          __DATE__, __TIME__);
+
   signal(SIGINT, sig_catcher);
   signal(SIGABRT, sig_catcher);
   signal(SIGTERM, sig_catcher);

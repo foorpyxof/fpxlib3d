@@ -3,10 +3,22 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include <sys/types.h>
-#include <vulkan/vulkan.h>
-#include <vulkan/vulkan_core.h>
+// LOCAL
+#include "fpx3d.h"
 
+#define VOLK_IMPLEMENTATION
+#include "vk.h"
+
+#include "window.h"
+
+#ifdef DEBUG
+#define FPX_VK_USE_VALIDATION_LAYERS
+#define FPX3D_DEBUG_ENABLE
+#endif
+#include "debug.h"
+// END OF LOCAL
+
+#include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -14,28 +26,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
-#include <fcntl.h>
-
-#include <GLFW/glfw3.h>
-#include <cglm/mat4.h>
-#include <cglm/vec4.h>
-
-#ifdef DEBUG
-#define FPX_VK_USE_VALIDATION_LAYERS
-#define FPX3D_DEBUG_ENABLE
-#endif
+// EXTERNALS
+#include "GLFW/glfw3.h"
+// END OF EXTERNALS
 
 // constants
 #define PIPELINE_DESCRIPTOR_SET_IDX 0
 #define OBJECT_DESCRIPTOR_SET_IDX 1
 
 #define HIGHEST_DESCRIPTOR_SET_IDX OBJECT_DESCRIPTOR_SET_IDX
-
-#include "debug.h"
-#include "fpx3d.h"
-#include "vk.h"
-#include "window.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(*arr))
 
@@ -1131,6 +1132,10 @@ Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *ctx,
                                      Fpx3d_Wnd_Context *wnd) {
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
 
+  VkResult volk_found = volkInitialize();
+  if (VK_SUCCESS != volk_found)
+    return FPX3D_VK_ERROR;
+
   ctx->windowContext = wnd;
 
   // user can change this
@@ -1238,6 +1243,8 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
 
   if (VK_SUCCESS != res)
     return FPX3D_VK_INSTANCE_CREATE_ERROR;
+
+  volkLoadInstance(ctx->vkInstance);
 
   res = glfwCreateWindowSurface(ctx->vkInstance, ctx->windowContext->glfwWindow,
                                 NULL, &ctx->vkSurface);

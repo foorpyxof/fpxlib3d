@@ -6,13 +6,14 @@
 #ifndef FPX_VK_H
 #define FPX_VK_H
 
-#include <cglm/types.h>
 #include <sys/types.h>
-#include <vulkan/vulkan.h>
-#include <vulkan/vulkan_core.h>
+
+#include "volk/volk.h"
 
 #include "fpx3d.h"
 #include "window.h"
+
+#include "cglm/include/cglm/types.h"
 
 #define TRUE 1
 #define FALSE 0
