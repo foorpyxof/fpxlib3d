@@ -1,0 +1,9 @@
+[submodule "volk"]
+	path = modules/volk
+	url = https://github.com/zeux/volk.git
+[submodule "cglm"]
+	path = modules/cglm
+	url = https://github.com/recp/cglm.git
+[submodule "stb"]
+	path = modules/stb
+	url = https://github.com/nothings/stb.git
