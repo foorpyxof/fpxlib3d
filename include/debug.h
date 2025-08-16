@@ -23,6 +23,7 @@
 #define FPX3D_DEBUG(fmt, ...)
 #define FPX3D_WARN(fmt, ...)
 #define FPX3D_ERROR(fmt, ...)
+#define FPX3D_TODO(fmt, ...)
 
 #define FPX3D_LINE_INFO(output)
 
@@ -37,13 +38,24 @@
 
 #undef FPX3D_DEBUG
 #define FPX3D_DEBUG(fmt, ...)                                                  \
-  fprintf(stderr, "\033[0;32mFPXLIB3D DEBUG:\033[0m " fmt                      \
+  fprintf(stderr, "\033[0;92mFPXLIB3D DEBUG:\033[0m " fmt                      \
                   "\033[0m\n" __VA_OPT__(, ) __VA_ARGS__)
 
 #undef FPX3D_WARN
 #define FPX3D_WARN(fmt, ...)                                                   \
   fprintf(stderr, "\033[0;93mFPXLIB3D WARN: \033[0m " fmt                      \
                   "\033[0m\n" __VA_OPT__(, ) __VA_ARGS__)
+
+#undef FPX3D_TODO
+#define FPX3D_TODO(fmt, ...)                                                   \
+  {                                                                            \
+    char _fpx_lineinfo_output_buffer[sizeof(__FILE__) + 16];                   \
+    FPX3D_LINE_INFO(_fpx_lineinfo_output_buffer);                              \
+    fprintf(stderr,                                                            \
+            "\033[0;96mFPXLIB3D TODO: \033[0m " fmt                            \
+            "\033[0m (at %s)\n" __VA_OPT__(, ) __VA_ARGS__,                    \
+            _fpx_lineinfo_output_buffer);                                      \
+  }
 
 #endif // FPX3D_DEBUG_ENABLE
 

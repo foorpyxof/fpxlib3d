@@ -5,14 +5,16 @@
 
 include make/*.mk
 
-CC := clang
+CC != which clang 2>/dev/null
 CC_WIN32 := x86_64-w64-mingw32-gcc
 
 CFLAGS := -std=gnu11 -Wall -Wextra -Wpedantic -Werror -Wno-gnu-zero-variadic-macro-arguments -Wno-unknown-warning-option -Wno-variadic-macro-arguments-omitted
 LDFLAGS := -lm
 
+WINDOWS_TARGET_NAME := win64
+
 ifeq ($(WINDOWS), true)
-	TARGET := win32
+	TARGET := win64
 
 	-include make/windows/*.mk
 
@@ -22,12 +24,20 @@ ifeq ($(WINDOWS), true)
 	# LDFLAGS += -lwinpthread-1
 	
 	EXE_EXT := .exe
+
 else
-	LDFLAGS += -lglfw -lvulkan
-	
-	EXE_EXT := .out
+	TARGET := linux
+
+ifeq ($(CC),)
+	CC != which cc
 endif
 
+	LDFLAGS += -lglfw -lvulkan
+	
+	# EXE_EXT := .out
+endif
+
+EXE_EXT := $(TARGET)$(EXE_EXT)
 
 RELEASE_FLAGS := -O3
 DEBUG_FLAGS := -DDEBUG -g -O0
@@ -37,8 +47,8 @@ BUILD_FOLDER := build
 SOURCE_FOLDER := src
 
 # !!! ADD THESE VARIABLES ON YOUR OWN IF NECESSARY (FOR EXAMPLE WHEN CROSS COMPILING) !!!
-EXTRA_INCLUDE_DIRS := $(VULKAN_INCLUDE_DIRECTORY) $(GLFW_INCLUDE_DIRECTORY) $(CGLM_INCLUDE_DIRECTORY)
-EXTRA_LIB_DIRS := $(VULKAN_LIBRARY_DIRECTORY) $(GLFW_LIBRARY_DIRECTORY)
+EXTRA_INCLUDE_DIRS += $(VULKAN_INCLUDE_DIRECTORY) $(GLFW_INCLUDE_DIRECTORY) $(CGLM_INCLUDE_DIRECTORY)
+EXTRA_LIB_DIRS += $(VULKAN_LIBRARY_DIRECTORY) $(GLFW_LIBRARY_DIRECTORY)
 
 INCLUDE_DIRS := include modules $(EXTRA_INCLUDE_DIRS)
 LIB_DIRS := $(EXTRA_LIB_DIRS)
@@ -46,8 +56,8 @@ LIB_DIRS := $(EXTRA_LIB_DIRS)
 CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I$(dir))
 LDFLAGS += $(foreach dir,$(LIB_DIRS),-L$(dir))
 
-RELEASE_APP := $(BUILD_FOLDER)/release$(EXE_EXT)
-DEBUG_APP := $(BUILD_FOLDER)/debug$(EXE_EXT)
+RELEASE_APP := $(BUILD_FOLDER)/release-$(EXE_EXT)
+DEBUG_APP := $(BUILD_FOLDER)/debug-$(EXE_EXT)
 
 MAIN := $(SOURCE_FOLDER)/main.c
 
@@ -87,3 +97,19 @@ $(DEBUG_APP): $(OBJECTS_DEBUG) $(MAIN)
 
 $(SHADER_FILES): %.spv: %
 	glslc $< -o $@
+
+TAR_FILE := gg_engine
+ROOT_DIR_NAME != basename $$(pwd)
+DONT_ARCHIVE := .git .cache $(wildcard build/*-$(EXE_EXT))
+
+ifneq ($(TARGET), $(WINDOWS_TARGET_NAME))
+	DONT_ARCHIVE += *.dll
+endif
+
+EXCLUDE := $(foreach dirname,$(DONT_ARCHIVE),--exclude=$(ROOT_DIR_NAME)/$(dirname))
+
+pack:
+	-ln -s $(wildcard build/*$(EXE_EXT)) .
+	cd $(dir $(shell pwd)); \
+	tar -czvhf $(TAR_FILE).tar.gz $(EXCLUDE) $(ROOT_DIR_NAME)/
+	find . -maxdepth 1 -name "*-$(EXE_EXT)" -type l -exec rm {} \;

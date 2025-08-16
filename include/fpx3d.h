@@ -52,8 +52,17 @@ typedef enum {
   FPX3D_VK_BAD_QUEUE_HANDLE_ERROR = -20029,
   FPX3D_VK_BAD_WINDOW_CONTEXT_ERROR = -20030,
   FPX3D_VK_BAD_LAYOUT_HANDLE_ERROR = -20031,
-  FPX3D_VK_NULLPTR_ERROR = -20032,
-  FPX3D_VK_BAD_BUFFER_SIZE = -20033,
+  FPX3D_VK_BAD_IMAGE_HANDLE_ERROR = -20022,
+  FPX3D_VK_NULLPTR_ERROR = -20033,
+  FPX3D_VK_BAD_BUFFER_SIZE = -20034,
 } Fpx3d_E_Result;
+
+#define FPX3D_ONFAIL(result, result_storage, code)                             \
+  {                                                                            \
+    Fpx3d_E_Result result_storage = result;                                    \
+    if (FPX3D_SUCCESS != result_storage) {                                     \
+      code                                                                     \
+    }                                                                          \
+  }
 
 #endif // FPX_3D_H

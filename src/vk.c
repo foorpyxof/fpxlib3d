@@ -57,14 +57,44 @@
 #define MAX_IN_FLIGHT 2
 #endif
 
+#define UNUSED(var)                                                            \
+  {                                                                            \
+    char _fpx_lineinfo_output_buffer[sizeof(__FILE__) + 16];                   \
+    FPX3D_LINE_INFO(_fpx_lineinfo_output_buffer);                              \
+    FPX3D_DEBUG("Variable %s is unused (at: %s)", #var,                        \
+                _fpx_lineinfo_output_buffer);                                  \
+    if (fmt) {                                                                 \
+    }                                                                          \
+  }
+
 #define LGPU_CHECK(lgpu, retval)                                               \
   if (VK_NULL_HANDLE == (lgpu)->handle) {                                      \
     return retval;                                                             \
   }
 
+#define SELECT_POOL_OF_TYPE(__type, l_gpu, output_ptr)                         \
+  for (size_t i = 0; i < l_gpu->commandPoolCapacity; ++i) {                    \
+    if (__type == l_gpu->commandPools[i].type) {                               \
+      output_ptr = &l_gpu->commandPools[i].pool;                               \
+      break;                                                                   \
+    }                                                                          \
+  }
+
 struct fpx3d_vk_qf_holder {
   Fpx3d_Vk_QueueFamily g_family, p_family, t_family;
 };
+
+struct fpx3d_vulkan_pool_queue_pair {
+  VkCommandPool *pool;
+  VkQueue *queue;
+
+  Fpx3d_Vk_E_QueueType type;
+};
+
+static VkFormat _fpx3d_vk_formats_lookup_table[][5] = {
+    {0, 0, 0, 0, 0},
+    {0, VK_FORMAT_R8_SRGB, VK_FORMAT_R8G8_SRGB, VK_FORMAT_R8G8B8_SRGB,
+     VK_FORMAT_R8G8B8A8_SRGB}};
 
 //
 //  START OF STATIC FUNCTION DECLARATIONS
@@ -72,17 +102,30 @@ struct fpx3d_vk_qf_holder {
 
 static size_t _align_up(size_t number, size_t alignment);
 
-static void _new_buffer(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
-                        VkDeviceSize size, VkBufferUsageFlags,
-                        VkMemoryPropertyFlags, VkSharingMode,
-                        Fpx3d_Vk_Buffer *output);
+static VkCommandBuffer _begin_temp_command_buffer(VkCommandPool graphics_pool,
+                                                  VkDevice lgpu);
 
-static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *, Fpx3d_Vk_Buffer *, void *data,
-                           VkDeviceSize size);
+static Fpx3d_E_Result _end_temp_command_buffer(VkCommandBuffer,
+                                               VkCommandPool graphics_pool,
+                                               VkQueue graphics_queue,
+                                               VkDevice lgpu);
 
-static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
-                       Fpx3d_Vk_Buffer *src, Fpx3d_Vk_Buffer *dst,
-                       VkDeviceSize size, VkCommandPool transfer_cmd_pool);
+static Fpx3d_E_Result _new_memory(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
+                                  VkMemoryPropertyFlags, VkMemoryRequirements,
+                                  VkDeviceMemory *output);
+
+static Fpx3d_E_Result _new_buffer(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
+                                  VkDeviceSize size, VkBufferUsageFlags,
+                                  VkMemoryPropertyFlags, VkSharingMode,
+                                  Fpx3d_Vk_Buffer *output);
+
+static Fpx3d_E_Result _data_to_buffer(Fpx3d_Vk_LogicalGpu *, Fpx3d_Vk_Buffer *,
+                                      void *data, VkDeviceSize size);
+
+static Fpx3d_E_Result _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
+                                  Fpx3d_Vk_Buffer *src, Fpx3d_Vk_Buffer *dst,
+                                  VkDeviceSize size,
+                                  VkCommandPool transfer_cmd_pool);
 
 static Fpx3d_Vk_Buffer _new_buffer_with_data(VkPhysicalDevice dev,
                                              Fpx3d_Vk_LogicalGpu *lgpu,
@@ -98,6 +141,31 @@ static Fpx3d_Vk_Buffer _new_vertex_buffer(VkPhysicalDevice,
 static Fpx3d_Vk_Buffer _new_index_buffer(VkPhysicalDevice,
                                          Fpx3d_Vk_LogicalGpu *,
                                          Fpx3d_Vk_VertexBundle *);
+
+static Fpx3d_E_Result
+_transition_image_layout(VkImage, VkFormat, VkImageLayout *old,
+                         VkImageLayout new, VkImageSubresourceRange,
+                         VkCommandPool graphics_pool, VkQueue graphics_queue,
+                         VkDevice lgpu);
+
+static Fpx3d_E_Result _vk_buf_to_image(VkBuffer, Fpx3d_Vk_Image *,
+                                       VkImageLayout,
+                                       VkImageSubresourceRange s_range,
+                                       VkCommandPool graphics_pool,
+                                       VkQueue graphics_queue, VkDevice lgpu);
+
+static struct fpx3d_vulkan_pool_queue_pair
+_graphics_pool_and_queue(Fpx3d_Vk_LogicalGpu *lgpu);
+
+static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
+                                 Fpx3d_Vk_LogicalGpu *lgpu,
+                                 Fpx3d_Vk_ImageDimensions, VkFormat fmt,
+                                 VkImageTiling tiling, VkImageUsageFlags usage,
+                                 Fpx3d_Vk_Image *output);
+
+static Fpx3d_E_Result _fill_image_data(Fpx3d_Vk_Image *, void *data,
+                                       size_t data_length,
+                                       Fpx3d_Vk_LogicalGpu *, VkPhysicalDevice);
 
 static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
                                             Fpx3d_Vk_E_ShaderStage stage);
@@ -215,22 +283,22 @@ fpx3d_vk_blacklist_queuefamily_index(Fpx3d_Vk_QueueFamilyRequirements *reqs,
   return FPX3D_SUCCESS;
 }
 
-// vec2 is an array of 2 floats
-Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *vert, vec2 pos) {
+// vecX is an array of X floats
+Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *vert, vec3 pos) {
   NULL_CHECK(vert, FPX3D_ARGS_ERROR);
   NULL_CHECK(pos, FPX3D_ARGS_ERROR);
 
-  memcpy(vert->position, pos, 2 * sizeof(*pos));
+  memcpy(vert->position, pos, sizeof(vec3));
 
   return FPX3D_SUCCESS;
 }
 
-// vec3 is an array of 3 floats
+// vecX is an array of X floats
 Fpx3d_E_Result fpx3d_set_vertex_color(Fpx3d_Vk_Vertex *vert, vec3 color) {
   NULL_CHECK(vert, FPX3D_ARGS_ERROR);
   NULL_CHECK(color, FPX3D_ARGS_ERROR);
 
-  memcpy(vert->color, color, 3 * sizeof(*color));
+  memcpy(vert->color, color, sizeof(vec3));
 
   return FPX3D_SUCCESS;
 }
@@ -250,25 +318,26 @@ Fpx3d_E_Result fpx3d_vk_allocate_vertices(Fpx3d_Vk_VertexBundle *bundle,
 }
 
 Fpx3d_E_Result fpx3d_vk_append_vertices(Fpx3d_Vk_VertexBundle *bundle,
-                                        Fpx3d_Vk_Vertex *vertices,
-                                        size_t amount) {
+                                        void *vertices, size_t amount) {
   if (1 > amount)
     return FPX3D_SUCCESS;
 
   NULL_CHECK(bundle, FPX3D_ARGS_ERROR);
   NULL_CHECK(vertices, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(bundle->vertices, FPX3D_VK_NULLPTR_ERROR);
+  if (1 > bundle->vertexDataSize)
+    return FPX3D_SUCCESS;
 
   if (bundle->vertexCount + amount > bundle->vertexCapacity)
     return FPX3D_GENERIC_ERROR;
+
+  NULL_CHECK(bundle->vertices, FPX3D_VK_NULLPTR_ERROR);
 
   memcpy((uint8_t *)bundle->vertices +
              (bundle->vertexCount * bundle->vertexDataSize),
          vertices, amount * bundle->vertexDataSize);
 
   bundle->vertexCount += amount;
-  bundle->vertexDataSize = sizeof(*vertices);
 
   return FPX3D_SUCCESS;
 }
@@ -837,6 +906,85 @@ fpx3d_vk_destroy_shadermodules(Fpx3d_Vk_ShaderModuleSet *to_destroy,
 }
 
 #undef DESTROY_IF_EXISTS
+
+Fpx3d_Vk_Image
+fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
+                              Fpx3d_Vk_ImageDimensions dimensions) {
+  Fpx3d_Vk_Image retval = {0};
+  NULL_CHECK(ctx, retval);
+  NULL_CHECK(lgpu, retval);
+  LGPU_CHECK(lgpu, retval);
+
+  if (1 > dimensions.channels || 1 > dimensions.height ||
+      1 > dimensions.width || 1 > dimensions.channelWidth)
+    return retval;
+
+  _new_image(ctx->physicalGpu, lgpu, dimensions,
+             _fpx3d_vk_formats_lookup_table[dimensions.channelWidth]
+                                           [dimensions.channels],
+             VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, &retval);
+
+  return retval;
+}
+
+Fpx3d_E_Result fpx3d_vk_fill_texture_image(Fpx3d_Vk_Image *img,
+                                           Fpx3d_Vk_Context *ctx,
+                                           Fpx3d_Vk_LogicalGpu *lgpu,
+                                           void *data) {
+  NULL_CHECK(img, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(data, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  size_t data_length = img->dimensions.width * img->dimensions.height *
+                       img->dimensions.channels * img->dimensions.channelWidth;
+
+  _fill_image_data(img, data, data_length, lgpu, ctx->physicalGpu);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_image_readonly(Fpx3d_Vk_Image *image,
+                                       Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(image, FPX3D_ARGS_ERROR);
+
+  if (image->isReadOnly)
+    return FPX3D_SUCCESS;
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  struct fpx3d_vulkan_pool_queue_pair pair = _graphics_pool_and_queue(lgpu);
+
+  if (NULL == pair.pool || NULL == pair.queue) {
+    return FPX3D_VK_ERROR;
+  }
+
+  _transition_image_layout(
+      image->image, image->imageFormat, &image->imageLayout,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, image->subresourceRange,
+      *pair.pool, *pair.queue, lgpu->handle);
+
+  image->isReadOnly = true;
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *image,
+                                      Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(image, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  vkDestroyImage(lgpu->handle, image->image, NULL);
+  vkFreeMemory(lgpu->handle, image->memory, NULL);
+
+  memset(image, 0, sizeof(*image));
+
+  return FPX3D_SUCCESS;
+}
 
 bool fpx3d_vk_instance_layers_supported(const char **layers,
                                         size_t layer_count) {
@@ -1430,10 +1578,10 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   d_info.enabledExtensionCount = ctx->lgpuExtensionCount;
   d_info.ppEnabledExtensionNames = ctx->lgpuExtensions;
 
-  // no longer required, but used for
-  // compatibility with older impl. of Vulkan
-  d_info.enabledLayerCount = ctx->instanceLayerCount;
-  d_info.ppEnabledLayerNames = ctx->instanceLayers;
+  // // no longer required, but used for
+  // // compatibility with older impl. of Vulkan
+  // d_info.enabledLayerCount = ctx->instanceLayerCount;
+  // d_info.ppEnabledLayerNames = ctx->instanceLayers;
 
   VkResult res =
       vkCreateDevice(ctx->physicalGpu, &d_info, NULL, &new_lgpu.handle);
@@ -1763,6 +1911,8 @@ Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
   // TODO: make modular. currently hardcoded to follow tutorial
   // maybe have the programmer pass an array of color attachments,
   // or maybe subpasses
+
+  FPX3D_TODO("Make fpx3d_vk_create_renderpass_at() modular");
 
   VkRenderPass pass = VK_NULL_HANDLE;
 
@@ -3015,43 +3165,60 @@ static size_t _align_up(size_t number, size_t alignment) {
   return new_number;
 }
 
-static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
-                        VkDeviceSize size, VkBufferUsageFlags usage,
-                        VkMemoryPropertyFlags mem_flags,
-                        VkSharingMode sharing_mode,
-                        Fpx3d_Vk_Buffer *output_buffer) {
-  VkBuffer new_buf = {0};
+static VkCommandBuffer _begin_temp_command_buffer(VkCommandPool graphics_pool,
+                                                  VkDevice lgpu) {
+  VkCommandBufferAllocateInfo b_info = {0};
+  b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  b_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  b_info.commandPool = graphics_pool;
+  b_info.commandBufferCount = 1;
+
+  VkCommandBuffer cbuffer = VK_NULL_HANDLE;
+  vkAllocateCommandBuffers(lgpu, &b_info, &cbuffer);
+
+  VkCommandBufferBeginInfo begin = {0};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+  vkBeginCommandBuffer(cbuffer, &begin);
+
+  return cbuffer;
+}
+
+static Fpx3d_E_Result _end_temp_command_buffer(VkCommandBuffer buf,
+                                               VkCommandPool graphics_pool,
+                                               VkQueue graphics_queue,
+                                               VkDevice lgpu) {
+  NULL_CHECK(buf, FPX3D_ARGS_ERROR);
+  Fpx3d_E_Result retval = FPX3D_SUCCESS;
+
+  vkEndCommandBuffer(buf);
+
+  VkSubmitInfo s_info = {0};
+  s_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  s_info.commandBufferCount = 1;
+  s_info.pCommandBuffers = &buf;
+
+  VkResult success = vkQueueSubmit(graphics_queue, 1, &s_info, VK_NULL_HANDLE);
+  vkQueueWaitIdle(graphics_queue);
+
+  if ((VkResult)0 > success) {
+    FPX3D_ERROR("Command buffer submission failed");
+
+    retval = FPX3D_VK_ERROR;
+  }
+
+  vkFreeCommandBuffers(lgpu, graphics_pool, 1, &buf);
+
+  return retval;
+}
+
+static Fpx3d_E_Result _new_memory(VkPhysicalDevice dev,
+                                  Fpx3d_Vk_LogicalGpu *lgpu,
+                                  VkMemoryPropertyFlags mem_flags,
+                                  VkMemoryRequirements mem_reqs,
+                                  VkDeviceMemory *output) {
   VkDeviceMemory new_mem = {0};
-
-  VkBufferCreateInfo b_info = {0};
-
-  b_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  b_info.size = size;
-  b_info.usage = usage;
-
-  uint32_t indices[2] = {lgpu->graphicsQueues.queueFamilyIndex,
-                         lgpu->transferQueues.queueFamilyIndex};
-
-  if (VK_SHARING_MODE_CONCURRENT == sharing_mode &&
-      (0 <= lgpu->transferQueues.queueFamilyIndex &&
-       lgpu->transferQueues.queueFamilyIndex !=
-           lgpu->graphicsQueues.queueFamilyIndex)) {
-    sharing_mode = VK_SHARING_MODE_CONCURRENT;
-    b_info.queueFamilyIndexCount = 2;
-    b_info.pQueueFamilyIndices = indices;
-  } else {
-    sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
-  }
-
-  b_info.sharingMode = sharing_mode;
-
-  if (VK_SUCCESS != vkCreateBuffer(lgpu->handle, &b_info, NULL, &new_buf)) {
-    FPX3D_WARN("Could not create a buffer");
-    return;
-  }
-
-  VkMemoryRequirements mem_reqs = {0};
-  vkGetBufferMemoryRequirements(lgpu->handle, new_buf, &mem_reqs);
 
   VkPhysicalDeviceMemoryProperties mem_props = {0};
   vkGetPhysicalDeviceMemoryProperties(dev, &mem_props);
@@ -3085,7 +3252,7 @@ static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
   if (0 > idx) {
     // error
     FPX3D_WARN("Could not find valid memory type");
-    return;
+    return FPX3D_VK_ERROR;
   }
 
   VkMemoryAllocateInfo m_info = {0};
@@ -3094,11 +3261,59 @@ static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
   m_info.memoryTypeIndex = idx;
 
   if (VK_SUCCESS != vkAllocateMemory(lgpu->handle, &m_info, NULL, &new_mem)) {
-    vkDestroyBuffer(lgpu->handle, new_buf, NULL);
-
     FPX3D_WARN("Could not allocate buffer memory");
 
-    return;
+    return FPX3D_VK_ERROR;
+  }
+
+  *output = new_mem;
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result
+_new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu, VkDeviceSize size,
+            VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_flags,
+            VkSharingMode sharing_mode, Fpx3d_Vk_Buffer *output_buffer) {
+  VkBuffer new_buf = {0};
+  VkDeviceMemory new_mem = {0};
+
+  VkBufferCreateInfo b_info = {0};
+
+  b_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  b_info.size = size;
+  b_info.usage = usage;
+
+  uint32_t indices[2] = {lgpu->graphicsQueues.queueFamilyIndex,
+                         lgpu->transferQueues.queueFamilyIndex};
+
+  if (VK_SHARING_MODE_CONCURRENT == sharing_mode &&
+      (0 <= lgpu->transferQueues.queueFamilyIndex &&
+       lgpu->transferQueues.queueFamilyIndex !=
+           lgpu->graphicsQueues.queueFamilyIndex)) {
+    sharing_mode = VK_SHARING_MODE_CONCURRENT;
+    b_info.queueFamilyIndexCount = 2;
+    b_info.pQueueFamilyIndices = indices;
+  } else {
+    sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
+  }
+
+  b_info.sharingMode = sharing_mode;
+
+  if (VK_SUCCESS != vkCreateBuffer(lgpu->handle, &b_info, NULL, &new_buf)) {
+    FPX3D_WARN("Could not create a buffer");
+    return FPX3D_VK_ERROR;
+  }
+
+  VkMemoryRequirements mem_reqs = {0};
+  vkGetBufferMemoryRequirements(lgpu->handle, new_buf, &mem_reqs);
+
+  Fpx3d_E_Result mem_success =
+      _new_memory(dev, lgpu, mem_flags, mem_reqs, &new_mem);
+  if (FPX3D_SUCCESS != mem_success) {
+    vkDestroyBuffer(lgpu->handle, new_buf, NULL);
+
+    return mem_success;
   }
 
   if (VK_SUCCESS != vkBindBufferMemory(lgpu->handle, new_buf, new_mem, 0)) {
@@ -3108,7 +3323,7 @@ static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
 
     FPX3D_WARN("Could not bind buffer memory");
 
-    return;
+    return FPX3D_VK_ERROR;
   }
 
   output_buffer->isValid = true;
@@ -3118,39 +3333,28 @@ static void _new_buffer(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
 
   output_buffer->memory = new_mem;
 
-  return;
+  return FPX3D_SUCCESS;
 }
 
-static int _data_to_buffer(Fpx3d_Vk_LogicalGpu *lgpu, Fpx3d_Vk_Buffer *buf,
-                           void *data, VkDeviceSize size) {
+static Fpx3d_E_Result _data_to_buffer(Fpx3d_Vk_LogicalGpu *lgpu,
+                                      Fpx3d_Vk_Buffer *buf, void *data,
+                                      VkDeviceSize size) {
   void *mapped = NULL;
   if (VK_SUCCESS != vkMapMemory(lgpu->handle, buf->memory, 0, size, 0, &mapped))
-    return -1;
+    return FPX3D_VK_ERROR;
 
   memcpy(mapped, data, size);
 
   vkUnmapMemory(lgpu->handle, buf->memory);
 
-  return 0;
+  return FPX3D_SUCCESS;
 }
 
-static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
-                       Fpx3d_Vk_Buffer *src, Fpx3d_Vk_Buffer *dst,
-                       VkDeviceSize size, VkCommandPool transfer_cmd_pool) {
-  VkCommandBufferAllocateInfo b_info = {0};
-  b_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  b_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  b_info.commandPool = transfer_cmd_pool;
-  b_info.commandBufferCount = 1;
-
-  VkCommandBuffer cbuffer = VK_NULL_HANDLE;
-  vkAllocateCommandBuffers(lgpu, &b_info, &cbuffer);
-
-  VkCommandBufferBeginInfo begin = {0};
-  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-  vkBeginCommandBuffer(cbuffer, &begin);
+static Fpx3d_E_Result _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
+                                  Fpx3d_Vk_Buffer *src, Fpx3d_Vk_Buffer *dst,
+                                  VkDeviceSize size,
+                                  VkCommandPool transfer_cmd_pool) {
+  VkCommandBuffer cbuffer = _begin_temp_command_buffer(transfer_cmd_pool, lgpu);
 
   VkBufferCopy region = {0};
   region.srcOffset = 0;
@@ -3159,26 +3363,21 @@ static int _vk_bufcopy(VkDevice lgpu, VkQueue transfer_queue,
 
   vkCmdCopyBuffer(cbuffer, src->buffer, dst->buffer, 1, &region);
 
-  vkEndCommandBuffer(cbuffer);
+  _end_temp_command_buffer(cbuffer, transfer_cmd_pool, transfer_queue, lgpu);
 
-  VkSubmitInfo s_info = {0};
-  s_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  s_info.commandBufferCount = 1;
-  s_info.pCommandBuffers = &cbuffer;
-
-  vkQueueSubmit(transfer_queue, 1, &s_info, VK_NULL_HANDLE);
-  vkQueueWaitIdle(transfer_queue);
-
-  vkFreeCommandBuffers(lgpu, transfer_cmd_pool, 1, &cbuffer);
-
-  return 0;
+  return FPX3D_SUCCESS;
 }
 
 static Fpx3d_Vk_Buffer _new_buffer_with_data(VkPhysicalDevice dev,
                                              Fpx3d_Vk_LogicalGpu *lgpu,
                                              void *data, VkDeviceSize size,
                                              VkBufferUsageFlags usage_flags) {
-  static size_t transfer_queue_index = 0;
+  // TODO: Currently when using a staging buffer, both of the buffers will be
+  // VK_SHARING_MODE_CONCURRENT. This can be changed by using
+  // VkBufferMemoryBarriers
+
+  FPX3D_TODO("Change VK_SHARING_MODE_CONCURRENT to VK_SHARING_MODE_EXCLUSIVE "
+             "for _new_buffer_with_data()")
 
   Fpx3d_Vk_Buffer s_buf = {0};
   Fpx3d_Vk_Buffer return_buf = {0};
@@ -3186,26 +3385,26 @@ static Fpx3d_Vk_Buffer _new_buffer_with_data(VkPhysicalDevice dev,
   NULL_CHECK(dev, return_buf);
   NULL_CHECK(lgpu->handle, return_buf);
 
-  bool use_staging = false;
+  bool use_staging = true;
 
-  VkQueue transfer_queue = VK_NULL_HANDLE;
-  VkCommandPool transfer_pool = VK_NULL_HANDLE;
-  if (NULL != lgpu->transferQueues.queues && NULL != lgpu->commandPools) {
-    if (lgpu->transferQueues.count > 0) {
-      for (size_t i = 0; i < lgpu->commandPoolCapacity; ++i) {
-        if (TRANSFER_POOL == lgpu->commandPools[i].type) {
-          transfer_pool = lgpu->commandPools[i].pool;
-          break;
-        }
-      }
-
-      use_staging = (VK_NULL_HANDLE != transfer_pool);
-    }
-
-    transfer_queue = lgpu->transferQueues.queues[transfer_queue_index];
+  VkQueue *graphics_queue = VK_NULL_HANDLE;
+  VkCommandPool *graphics_pool = VK_NULL_HANDLE;
+  if (NULL != lgpu->commandPools) {
+    SELECT_POOL_OF_TYPE(GRAPHICS_POOL, lgpu, graphics_pool);
   }
 
-  use_staging = use_staging && (VK_NULL_HANDLE != transfer_queue);
+  use_staging = (NULL != graphics_pool);
+
+  if (use_staging) {
+    if (NULL != lgpu->graphicsQueues.queues && lgpu->graphicsQueues.count > 0) {
+      graphics_queue =
+          &lgpu->graphicsQueues.queues[lgpu->graphicsQueues.nextToUse++];
+    } else {
+      use_staging = false;
+    }
+  }
+
+  lgpu->graphicsQueues.nextToUse %= lgpu->graphicsQueues.count;
 
   VkBufferUsageFlags u_flags = usage_flags;
   VkSharingMode s_mode = VK_SHARING_MODE_EXCLUSIVE;
@@ -3213,32 +3412,28 @@ static Fpx3d_Vk_Buffer _new_buffer_with_data(VkPhysicalDevice dev,
                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
   if (use_staging) {
-    transfer_queue_index =
-        (transfer_queue_index + 1) % lgpu->transferQueues.count;
-
-    u_flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    s_mode = VK_SHARING_MODE_CONCURRENT;
-    m_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
     _new_buffer(dev, lgpu, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 VK_SHARING_MODE_CONCURRENT, &s_buf);
 
     if (false == s_buf.isValid)
-      return return_buf;
+      use_staging = false;
+    else {
+      u_flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      s_mode = VK_SHARING_MODE_CONCURRENT;
+      m_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-    _data_to_buffer(lgpu, &s_buf, data, size);
+      _data_to_buffer(lgpu, &s_buf, data, size);
+    }
   }
 
   _new_buffer(dev, lgpu, size, u_flags, m_flags, s_mode, &return_buf);
 
   if (use_staging) {
-    _vk_bufcopy(lgpu->handle, transfer_queue, &s_buf, &return_buf, size,
-                transfer_pool);
-
-    vkDestroyBuffer(lgpu->handle, s_buf.buffer, NULL);
-    vkFreeMemory(lgpu->handle, s_buf.memory, NULL);
+    _vk_bufcopy(lgpu->handle, *graphics_queue, &s_buf, &return_buf, size,
+                *graphics_pool);
+    _destroy_buffer_object(lgpu, &s_buf);
   } else {
     _data_to_buffer(lgpu, &return_buf, data, size);
   }
@@ -3294,6 +3489,288 @@ static Fpx3d_Vk_Buffer _new_index_buffer(VkPhysicalDevice dev,
   return new_buf;
 }
 
+static Fpx3d_E_Result
+_transition_image_layout(VkImage img, VkFormat fmt, VkImageLayout *old,
+                         VkImageLayout new, VkImageSubresourceRange s_range,
+                         VkCommandPool graphics_pool, VkQueue graphics_queue,
+                         VkDevice lgpu) {
+  UNUSED(fmt);
+
+  VkCommandBuffer cbuf = _begin_temp_command_buffer(graphics_pool, lgpu);
+
+  VkImageMemoryBarrier barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = *old,
+      .newLayout = new,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = img,
+      .subresourceRange = s_range,
+      .srcAccessMask = 0,
+      .dstAccessMask = 0};
+
+  VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_FLAG_BITS_MAX_ENUM,
+                       dstStage = VK_PIPELINE_STAGE_FLAG_BITS_MAX_ENUM;
+
+  switch (*old) {
+  case VK_IMAGE_LAYOUT_UNDEFINED:
+    srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask = 0;
+    break;
+
+  case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+    srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    break;
+
+  default:
+    FPX3D_ERROR("Image layout transition from %u not implemented", *old);
+    return FPX3D_GENERIC_ERROR;
+    break;
+  }
+
+  switch (new) {
+  case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+    dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    break;
+
+  case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+    dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    break;
+
+  default:
+    FPX3D_ERROR("Image layout transition to %u not implemented", new);
+    return FPX3D_GENERIC_ERROR;
+    break;
+  }
+
+  // https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-access-types-supported
+  vkCmdPipelineBarrier(cbuf, srcStage, dstStage, 0, 0, NULL, 0, NULL, 1,
+                       &barrier);
+
+  Fpx3d_E_Result success =
+      _end_temp_command_buffer(cbuf, graphics_pool, graphics_queue, lgpu);
+  if (FPX3D_SUCCESS != success)
+    return success;
+
+  *old = new;
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result _vk_buf_to_image(VkBuffer buf, Fpx3d_Vk_Image *img,
+                                       VkImageLayout layout,
+                                       VkImageSubresourceRange s_range,
+                                       VkCommandPool graphics_pool,
+                                       VkQueue graphics_queue, VkDevice lgpu) {
+  VkCommandBuffer cbuf = _begin_temp_command_buffer(graphics_pool, lgpu);
+
+  VkBufferImageCopy region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource = {.aspectMask = s_range.aspectMask,
+                           .mipLevel = s_range.baseMipLevel,
+                           .baseArrayLayer = s_range.baseArrayLayer,
+                           .layerCount = s_range.layerCount},
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {.width = img->dimensions.width,
+                      .height = img->dimensions.height,
+                      .depth = 1}};
+
+  vkCmdCopyBufferToImage(cbuf, buf, img->image, layout, 1, &region);
+
+  return _end_temp_command_buffer(cbuf, graphics_pool, graphics_queue, lgpu);
+}
+
+static struct fpx3d_vulkan_pool_queue_pair
+_graphics_pool_and_queue(Fpx3d_Vk_LogicalGpu *lgpu) {
+  struct fpx3d_vulkan_pool_queue_pair pair = {0};
+
+  NULL_CHECK(lgpu, pair);
+  LGPU_CHECK(lgpu, pair);
+
+  VkQueue *graphics_queue = VK_NULL_HANDLE;
+  VkCommandPool *graphics_pool = VK_NULL_HANDLE;
+  if (NULL != lgpu->commandPools) {
+    SELECT_POOL_OF_TYPE(GRAPHICS_POOL, lgpu, graphics_pool);
+  }
+
+  if (NULL == graphics_pool) {
+    return pair;
+  }
+
+  if (NULL != lgpu->graphicsQueues.queues && lgpu->graphicsQueues.count > 0) {
+    graphics_queue =
+        &lgpu->graphicsQueues.queues[lgpu->graphicsQueues.nextToUse++];
+    pair.type = GRAPHICS_QUEUE;
+  } else {
+    return pair;
+  }
+
+  lgpu->graphicsQueues.nextToUse %= lgpu->graphicsQueues.count;
+
+  pair.pool = graphics_pool;
+  pair.queue = graphics_queue;
+
+  return pair;
+}
+
+static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
+                                 Fpx3d_Vk_LogicalGpu *lgpu,
+                                 Fpx3d_Vk_ImageDimensions dimensions,
+                                 VkFormat fmt, VkImageTiling tiling,
+                                 VkImageUsageFlags usage,
+                                 Fpx3d_Vk_Image *output) {
+  NULL_CHECK(output, FPX3D_ARGS_ERROR);
+  NULL_CHECK(dev, FPX3D_ARGS_ERROR);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  if ((VkFormat)0 == fmt)
+    return FPX3D_ARGS_ERROR;
+
+  FPX3D_TODO(
+      "_new_image() and its subsidiaries have a lot of hard-coded stuff. fix");
+
+  struct fpx3d_vulkan_pool_queue_pair pair = _graphics_pool_and_queue(lgpu);
+  if (NULL == pair.pool || NULL == pair.queue) {
+    FPX3D_ERROR("No graphics-enabled queues or command pools available on LGPU "
+                "%p to create image",
+                (void *)lgpu->handle);
+
+    return FPX3D_GENERIC_ERROR;
+  }
+
+  VkImageUsageFlags u_flags = usage;
+  VkSharingMode s_mode = VK_SHARING_MODE_EXCLUSIVE;
+  VkMemoryPropertyFlags m_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+  u_flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+  m_flags &= ~(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  m_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+  VkImage new_img = {0};
+  VkDeviceMemory new_mem = {0};
+
+  VkImageCreateInfo i_info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .imageType = VK_IMAGE_TYPE_2D,
+                              .extent = {.width = dimensions.width,
+                                         .height = dimensions.height,
+                                         .depth = 1},
+                              .mipLevels = 1,
+                              .arrayLayers = 1,
+                              .format = fmt,
+                              .tiling = tiling,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                              .usage = u_flags,
+                              .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .sharingMode = s_mode};
+
+  if (VK_SUCCESS != vkCreateImage(lgpu->handle, &i_info, NULL, &new_img)) {
+    FPX3D_WARN("Failed to create new VkImage");
+    return FPX3D_VK_ERROR;
+  }
+
+  VkImageSubresourceRange s_range = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     .baseArrayLayer = 0,
+                                     .baseMipLevel = 0,
+                                     .layerCount = 1,
+                                     .levelCount = 1};
+
+  VkMemoryRequirements mem_reqs = {0};
+  vkGetImageMemoryRequirements(lgpu->handle, new_img, &mem_reqs);
+
+  FPX3D_ONFAIL(_new_memory(dev, lgpu, m_flags, mem_reqs, &new_mem), mem_success,
+               vkDestroyImage(lgpu->handle, new_img, NULL);
+               FPX3D_ERROR("Failed to allocate image memory");
+               return mem_success;);
+
+  if (VK_SUCCESS != vkBindImageMemory(lgpu->handle, new_img, new_mem, 0)) {
+    FPX3D_ERROR("Failed to bind image memory");
+
+    return FPX3D_VK_ERROR;
+  }
+
+  {
+    VkImageLayout temp_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    FPX3D_ONFAIL(_transition_image_layout(new_img, fmt, &temp_layout,
+                                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                          s_range, *pair.pool, *pair.queue,
+                                          lgpu->handle),
+                 success, FPX3D_ERROR("Failed to prepare image layout");
+                 return success;);
+  }
+
+  output->image = new_img;
+  output->memory = new_mem;
+
+  output->imageFormat = fmt;
+
+  output->dimensions = dimensions;
+
+  output->subresourceRange = s_range;
+
+  output->isValid = true;
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result _fill_image_data(Fpx3d_Vk_Image *image, void *data,
+                                       size_t data_length,
+                                       Fpx3d_Vk_LogicalGpu *lgpu,
+                                       VkPhysicalDevice dev) {
+  NULL_CHECK(image, FPX3D_ARGS_ERROR);
+  NULL_CHECK(data, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(image->image, FPX3D_VK_BAD_IMAGE_HANDLE_ERROR);
+  NULL_CHECK(image->memory, FPX3D_VK_BAD_MEMORY_HANDLE_ERROR);
+
+  struct fpx3d_vulkan_pool_queue_pair pair = _graphics_pool_and_queue(lgpu);
+
+  if (NULL == pair.pool || NULL == pair.queue) {
+    return FPX3D_GENERIC_ERROR;
+  }
+
+  data_length =
+      MIN(data_length, image->dimensions.width * image->dimensions.height *
+                           image->dimensions.channels *
+                           image->dimensions.channelWidth);
+  size_t size = data_length;
+
+  Fpx3d_Vk_Buffer staging_buf = {0};
+  FPX3D_ONFAIL(
+      _new_buffer(dev, lgpu, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                  VK_SHARING_MODE_CONCURRENT, &staging_buf),
+      success,
+      FPX3D_ERROR("Failed to create staging buffer for image transfer");
+      return success;);
+
+  FPX3D_ONFAIL(_data_to_buffer(lgpu, &staging_buf, data, size), success,
+               FPX3D_ERROR("Failed to fill staging buffer with image data");
+               return success;);
+
+  FPX3D_ONFAIL(_vk_buf_to_image(staging_buf.buffer, image,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                image->subresourceRange, *pair.pool,
+                                *pair.queue, lgpu->handle),
+               success, FPX3D_ERROR("Failed to copy staging memory into image");
+               return success;);
+
+  _destroy_buffer_object(lgpu, &staging_buf);
+
+  return FPX3D_SUCCESS;
+}
+
+// can return NULL
 static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
                                             Fpx3d_Vk_E_ShaderStage stage) {
   VkShaderModule *module = NULL;

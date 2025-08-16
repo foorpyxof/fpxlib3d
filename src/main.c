@@ -24,6 +24,9 @@
 
 #endif
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
+
 #include <GLFW/glfw3.h>
 #include <cglm/affine.h>
 #include <cglm/cam.h>
@@ -59,6 +62,8 @@ struct model_descriptor triangle_model = {0};
 struct model_descriptor square_model = {0};
 struct model_descriptor square_dupe_model = {0};
 struct model_descriptor pyramid_model = {0};
+
+Fpx3d_Vk_Image flopper = {0};
 
 bool key_states[GLFW_KEY_LAST + 1] = {0};
 void key_cb(GLFWwindow *wnd, int key, int scancode, int action, int mods) {
@@ -253,7 +258,9 @@ Fpx3d_Vk_Pipeline *pipeline = NULL;
 // ----- COMMAND STUFF
 
 Fpx3d_Vk_CommandPool *transfer_pool = NULL;
+Fpx3d_Vk_CommandPool *graphics_pool = NULL;
 VkCommandBuffer *transfer_buffer = NULL;
+VkCommandBuffer *graphics_buffer = NULL;
 
 // ----- OTHER
 
@@ -275,6 +282,8 @@ void dest_callback(void *custom_ptr) {
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &triangle_buffer));
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &square_buffer));
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &pyramid_buffer));
+
+  PRINT_FAILURE(fpx3d_vk_destroy_image(&flopper, lgpu));
 
   PRINT_FAILURE(fpx3d_vk_destroy_descriptor_set_layout(ds_layout_global, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_descriptor_set_layout(ds_layout_shape, lgpu));
@@ -332,12 +341,14 @@ void vulkan_setup(void) {
 
   FATAL_FAIL(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, sc_reqs));
 
-  PRINT_FAILURE(fpx3d_vk_allocate_commandpools(lgpu, 1));
+  PRINT_FAILURE(fpx3d_vk_allocate_commandpools(lgpu, 2));
   PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 0, TRANSFER_POOL));
+  PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 1, GRAPHICS_POOL));
   transfer_pool = fpx3d_vk_get_commandpool_at(lgpu, 0);
+  graphics_pool = fpx3d_vk_get_commandpool_at(lgpu, 1);
 
-  PRINT_FAILURE(fpx3d_vk_allocate_commandbuffers_at_pool(lgpu, 0, 1));
-  transfer_buffer = fpx3d_vk_get_commandbuffer_at(transfer_pool, 0);
+  PRINT_FAILURE(fpx3d_vk_allocate_commandbuffers_at_pool(lgpu, 0, 4));
+  PRINT_FAILURE(fpx3d_vk_allocate_commandbuffers_at_pool(lgpu, 1, 4));
 
   FATAL_FAIL(fpx3d_vk_allocate_renderpasses(lgpu, 1));
   FATAL_FAIL(fpx3d_vk_create_renderpass_at(lgpu, 0));
@@ -361,6 +372,22 @@ void load_shaders(void) {
 
   FATAL_FAIL(fpx3d_vk_load_shadermodules(shaders, ARRAY_SIZE(shaders), lgpu,
                                          &modules));
+}
+
+void load_textures(void) {
+  Fpx3d_Vk_ImageDimensions dims = {0};
+  int width, height, channels;
+  stbi_uc *pixels = stbi_load("images/flopper.jpg", &width, &height, &channels,
+                              STBI_rgb_alpha);
+  dims.width = width;
+  dims.height = height;
+  dims.channels = STBI_rgb_alpha;
+  dims.channelWidth = 1;
+
+  flopper = fpx3d_vk_create_texture_image(&vk_ctx, lgpu, dims);
+  fpx3d_vk_fill_texture_image(&flopper, &vk_ctx, lgpu, pixels);
+  stbi_image_free(pixels);
+  fpx3d_vk_image_readonly(&flopper, lgpu);
 }
 
 Fpx3d_Vk_VertexAttribute vertex_attributes[] = {
@@ -510,6 +537,7 @@ int main(int argc, const char **argv) {
 
   vulkan_setup();
   load_shaders();
+  load_textures();
   create_shapes();
   create_descriptor_sets();
   create_pipelines();

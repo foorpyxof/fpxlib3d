@@ -299,6 +299,45 @@ struct _fpx3d_vk_buffer {
   bool isValid;
 };
 
+// IMAGE -----------------------------------------------------------------------
+
+typedef struct _fpx3d_vk_image_dimensions Fpx3d_Vk_ImageDimensions;
+typedef struct _fpx3d_vk_image Fpx3d_Vk_Image;
+
+struct _fpx3d_vk_image_dimensions {
+  uint32_t width;
+  uint32_t height;
+  uint32_t channels;
+  uint32_t channelWidth;
+};
+
+struct _fpx3d_vk_image {
+  Fpx3d_Vk_ImageDimensions dimensions;
+
+  VkImage image;
+  VkDeviceMemory memory;
+
+  VkFormat imageFormat;
+
+  VkImageSubresourceRange subresourceRange;
+
+  VkImageLayout imageLayout;
+  bool isReadOnly;
+
+  bool isValid;
+};
+
+Fpx3d_Vk_Image
+fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *,
+                              Fpx3d_Vk_ImageDimensions dimensions);
+
+Fpx3d_E_Result fpx3d_vk_fill_texture_image(Fpx3d_Vk_Image *, Fpx3d_Vk_Context *,
+                                           Fpx3d_Vk_LogicalGpu *, void *data);
+
+Fpx3d_E_Result fpx3d_vk_image_readonly(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+
+Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+
 // DESCRIPTORS -----------------------------------------------------------------
 
 // compatible with VkDescriptorType
@@ -411,7 +450,7 @@ struct _fpx3d_vk_vertex_attr {
   size_t dataOffsetBytes;
 };
 
-Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *, vec2 pos);
+Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *, vec3 pos);
 Fpx3d_E_Result fpx3d_set_vertex_color(Fpx3d_Vk_Vertex *, vec3 color);
 
 // will *only* zero-initialize if this is an initial allocation,
@@ -419,8 +458,7 @@ Fpx3d_E_Result fpx3d_set_vertex_color(Fpx3d_Vk_Vertex *, vec3 color);
 Fpx3d_E_Result fpx3d_vk_allocate_vertices(Fpx3d_Vk_VertexBundle *,
                                           size_t amount,
                                           size_t single_vertex_size);
-Fpx3d_E_Result fpx3d_vk_append_vertices(Fpx3d_Vk_VertexBundle *,
-                                        Fpx3d_Vk_Vertex *vertices,
+Fpx3d_E_Result fpx3d_vk_append_vertices(Fpx3d_Vk_VertexBundle *, void *vertices,
                                         size_t amount);
 Fpx3d_E_Result fpx3d_vk_set_indices(Fpx3d_Vk_VertexBundle *, uint32_t *indices,
                                     size_t amount);
@@ -608,6 +646,7 @@ Fpx3d_E_Result fpx3d_vk_submit_commandbuffer(VkCommandBuffer *,
 struct fpx3d_vulkan_queues {
   VkQueue *queues;
   size_t count;
+  size_t nextToUse;
 
   size_t offsetInFamily;
   int queueFamilyIndex;
