@@ -4,18 +4,17 @@
  */
 
 // LOCAL
-#include "fpx3d.h"
-
 #define VOLK_IMPLEMENTATION
 #include "vk.h"
-
-#include "window.h"
 
 #ifdef DEBUG
 #define FPX_VK_USE_VALIDATION_LAYERS
 #define FPX3D_DEBUG_ENABLE
 #endif
 #include "debug.h"
+
+#include "fpx3d.h"
+#include "window.h"
 // END OF LOCAL
 
 #include <fcntl.h>
@@ -97,6 +96,10 @@ static VkFormat _fpx3d_vk_formats_lookup_table[][5] = {
     {0, VK_FORMAT_R8_SRGB, VK_FORMAT_R8G8_SRGB, VK_FORMAT_R8G8B8_SRGB,
      VK_FORMAT_R8G8B8A8_SRGB}};
 
+#define VALID_FORMAT_INDEX(idx)                                                \
+  ((ARRAY_SIZE(_fpx3d_vk_formats_lookup_table) *                               \
+    ARRAY_SIZE(_fpx3d_vk_formats_lookup_table[0])) < (idx))
+
 //
 //  START OF STATIC FUNCTION DECLARATIONS
 //
@@ -164,6 +167,14 @@ static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
                                  VkImageTiling tiling, VkImageUsageFlags usage,
                                  Fpx3d_Vk_Image *output);
 
+static VkImageView _new_image_view(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+
+static Fpx3d_E_Result _new_image_sampler(Fpx3d_Vk_Context *,
+                                         Fpx3d_Vk_LogicalGpu *,
+                                         VkSamplerAddressMode addr_mode,
+                                         bool bilinear, bool anisotropy,
+                                         Fpx3d_Vk_ImageSampler *output);
+
 static Fpx3d_E_Result _fill_image_data(Fpx3d_Vk_Image *, void *data,
                                        size_t data_length,
                                        Fpx3d_Vk_LogicalGpu *, VkPhysicalDevice);
@@ -223,9 +234,18 @@ static Fpx3d_E_Result _create_queues(Fpx3d_Vk_LogicalGpu *,
                                      Fpx3d_Vk_E_QueueType, size_t count);
 static Fpx3d_E_Result _create_all_available_queues(Fpx3d_Vk_LogicalGpu *);
 
-static Fpx3d_E_Result _bind_descriptors_to_buffer(Fpx3d_Vk_DescriptorSet *,
-                                                  Fpx3d_Vk_Context *,
-                                                  Fpx3d_Vk_LogicalGpu *);
+static Fpx3d_E_Result _create_descriptor_buffer_write_set(
+    VkWriteDescriptorSet *w_sets, Fpx3d_Vk_DescriptorSet *ds,
+    size_t binding_index, size_t buffer_alignment, size_t *buffer_offset);
+
+static Fpx3d_E_Result
+_create_descriptor_image_write_set(VkWriteDescriptorSet *w_sets,
+                                   Fpx3d_Vk_DescriptorSet *ds,
+                                   size_t binding_index);
+
+static Fpx3d_E_Result _bind_descriptors(Fpx3d_Vk_DescriptorSet *,
+                                        Fpx3d_Vk_Context *,
+                                        Fpx3d_Vk_LogicalGpu *);
 //
 //  END OF STATIC FUNCTION DECLARATIONS
 //
@@ -454,7 +474,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_shape(Fpx3d_Vk_Shape *shape,
     }
 
   FREE_SAFE(shape->bindings.inFlightDescriptorSets);
-  FREE_SAFE(shape->bindings.rawData);
+  FREE_SAFE(shape->bindings.rawBufferData);
 
   memset(shape, 0, sizeof(*shape));
 
@@ -475,7 +495,7 @@ Fpx3d_Vk_Shape fpx3d_vk_duplicate_shape(Fpx3d_Vk_Shape *subject,
   void *raw_binding_data = NULL;
 
   bool descriptors = NULL != subject->bindings.inFlightDescriptorSets &&
-                     NULL != subject->bindings.rawData;
+                     NULL != subject->bindings.rawBufferData;
 
   if (descriptors) {
     size_t alloc_size =
@@ -527,14 +547,14 @@ Fpx3d_Vk_Shape fpx3d_vk_duplicate_shape(Fpx3d_Vk_Shape *subject,
       return retval;
     }
 
-    memcpy(raw_binding_data, subject->bindings.rawData,
+    memcpy(raw_binding_data, subject->bindings.rawBufferData,
            subject->bindings.inFlightDescriptorSets->buffer.objectCount *
                subject->bindings.inFlightDescriptorSets->buffer.stride);
 
     FREE_SAFE(bindings);
   }
 
-  retval.bindings.rawData = raw_binding_data;
+  retval.bindings.rawBufferData = raw_binding_data;
 
   return retval;
 }
@@ -576,11 +596,11 @@ Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
     }
   }
 
-  shape->bindings.rawData =
+  shape->bindings.rawBufferData =
       calloc(shape->bindings.inFlightDescriptorSets->buffer.objectCount,
              shape->bindings.inFlightDescriptorSets->buffer.stride);
 
-  if (NULL == shape->bindings.rawData) {
+  if (NULL == shape->bindings.rawBufferData) {
     perror("calloc()");
 
     for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
@@ -599,11 +619,12 @@ Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
 Fpx3d_E_Result fpx3d_vk_update_shape_descriptor(Fpx3d_Vk_Shape *shape,
                                                 size_t binding, size_t element,
                                                 void *value,
-                                                Fpx3d_Vk_Context *ctx) {
+                                                Fpx3d_Vk_Context *ctx,
+                                                Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(shape, FPX3D_ARGS_ERROR);
   NULL_CHECK(value, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(shape->bindings.rawData, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(shape->bindings.rawBufferData, FPX3D_VK_NULLPTR_ERROR);
 
   Fpx3d_Vk_DescriptorSet *set_data = shape->bindings.inFlightDescriptorSets;
 
@@ -615,15 +636,39 @@ Fpx3d_E_Result fpx3d_vk_update_shape_descriptor(Fpx3d_Vk_Shape *shape,
   if (set_data->bindings[binding].bindingProperties.elementCount <= element)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
 
-  uint8_t *destination = (uint8_t *)shape->bindings.rawData;
-  destination += set_data->bindings[binding].dataOffset;
-  destination +=
-      element *
-      _align_up(set_data->bindings[binding].bindingProperties.elementSize,
-                ctx->constants.bufferAlignment);
+  uint8_t *buf_data_destination = (uint8_t *)shape->bindings.rawBufferData;
+  Fpx3d_Vk_Texture *texture_to_apply = NULL;
 
-  memcpy(destination, value,
-         set_data->bindings[binding].bindingProperties.elementSize);
+  switch (set_data->bindings[binding].bindingProperties.type) {
+  case DESC_UNIFORM:
+    buf_data_destination += set_data->bindings[binding].dataOffset;
+    buf_data_destination +=
+        element *
+        _align_up(set_data->bindings[binding].bindingProperties.elementSize,
+                  ctx->constants.bufferAlignment);
+
+    memcpy(buf_data_destination, value,
+           set_data->bindings[binding].bindingProperties.elementSize);
+    break;
+
+  case DESC_IMAGE_SAMPLER:
+    texture_to_apply = (Fpx3d_Vk_Texture *)value;
+    for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
+      set_data[i]
+          .bindings[binding]
+          .bindingProperties.imageSampler.textureReferences[element] =
+          texture_to_apply;
+
+      VkWriteDescriptorSet w_set = {0};
+      _create_descriptor_image_write_set(&w_set, &set_data[i], binding);
+      vkUpdateDescriptorSets(lgpu->handle, 1, &w_set, 0, NULL);
+    }
+    break;
+
+  case DESC_INVALID:
+    // bad
+    break;
+  }
 
   return FPX3D_SUCCESS;
 }
@@ -661,11 +706,11 @@ Fpx3d_E_Result fpx3d_vk_create_pipeline_descriptors(
     }
   }
 
-  pipeline->bindings.rawData =
+  pipeline->bindings.rawBufferData =
       calloc(pipeline->bindings.inFlightDescriptorSets->buffer.objectCount,
              pipeline->bindings.inFlightDescriptorSets->buffer.stride);
 
-  if (NULL == pipeline->bindings.rawData) {
+  if (NULL == pipeline->bindings.rawBufferData) {
     perror("calloc()");
 
     for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
@@ -688,7 +733,7 @@ Fpx3d_E_Result fpx3d_vk_update_pipeline_descriptor(Fpx3d_Vk_Pipeline *pipeline,
   NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
   NULL_CHECK(value, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(pipeline->bindings.rawData, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(pipeline->bindings.rawBufferData, FPX3D_VK_NULLPTR_ERROR);
 
   Fpx3d_Vk_DescriptorSet *set_data = pipeline->bindings.inFlightDescriptorSets;
 
@@ -700,7 +745,7 @@ Fpx3d_E_Result fpx3d_vk_update_pipeline_descriptor(Fpx3d_Vk_Pipeline *pipeline,
   if (set_data->bindings[binding].bindingProperties.elementCount <= element)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
 
-  uint8_t *destination = (uint8_t *)pipeline->bindings.rawData;
+  uint8_t *destination = (uint8_t *)pipeline->bindings.rawBufferData;
   destination += set_data->bindings[binding].dataOffset;
   destination +=
       element *
@@ -908,9 +953,9 @@ fpx3d_vk_destroy_shadermodules(Fpx3d_Vk_ShaderModuleSet *to_destroy,
 
 #undef DESTROY_IF_EXISTS
 
-Fpx3d_Vk_Image
-fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
-                              Fpx3d_Vk_ImageDimensions dimensions) {
+Fpx3d_Vk_Image fpx3d_vk_create_image(Fpx3d_Vk_Context *ctx,
+                                     Fpx3d_Vk_LogicalGpu *lgpu,
+                                     Fpx3d_Vk_ImageDimensions dimensions) {
   Fpx3d_Vk_Image retval = {0};
   NULL_CHECK(ctx, retval);
   NULL_CHECK(lgpu, retval);
@@ -920,18 +965,34 @@ fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
       1 > dimensions.width || 1 > dimensions.channelWidth)
     return retval;
 
-  _new_image(ctx->physicalGpu, lgpu, dimensions,
-             _fpx3d_vk_formats_lookup_table[dimensions.channelWidth]
-                                           [dimensions.channels],
-             VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, &retval);
+  if (VALID_FORMAT_INDEX(dimensions.channels * dimensions.channelWidth)) {
+    // lookup table index out of range
+    return retval;
+  }
+
+  VkFormat fmt = _fpx3d_vk_formats_lookup_table[dimensions.channelWidth]
+                                               [dimensions.channels];
+
+  FPX3D_ONFAIL(_new_image(ctx->physicalGpu, lgpu, dimensions, fmt,
+                          VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT,
+                          &retval),
+               success, return retval;);
+
+  VkImageView new_view = _new_image_view(&retval, lgpu);
+
+  if (VK_NULL_HANDLE == new_view) {
+    fpx3d_vk_destroy_image(&retval, lgpu);
+    return retval;
+  }
+
+  retval.imageView = new_view;
+  retval.sizeInBytes = fpx3d_vk_get_image_size_bytes;
 
   return retval;
 }
 
-Fpx3d_E_Result fpx3d_vk_fill_texture_image(Fpx3d_Vk_Image *img,
-                                           Fpx3d_Vk_Context *ctx,
-                                           Fpx3d_Vk_LogicalGpu *lgpu,
-                                           void *data) {
+Fpx3d_E_Result fpx3d_vk_fill_image(Fpx3d_Vk_Image *img, Fpx3d_Vk_Context *ctx,
+                                   Fpx3d_Vk_LogicalGpu *lgpu, void *data) {
   NULL_CHECK(img, FPX3D_ARGS_ERROR);
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
   NULL_CHECK(data, FPX3D_ARGS_ERROR);
@@ -979,12 +1040,72 @@ Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *image,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  vkDestroyImage(lgpu->handle, image->image, NULL);
-  vkFreeMemory(lgpu->handle, image->memory, NULL);
+  if (VK_NULL_HANDLE != image->imageView)
+    vkDestroyImageView(lgpu->handle, image->imageView, NULL);
+
+  if (VK_NULL_HANDLE != image->image)
+    vkDestroyImage(lgpu->handle, image->image, NULL);
+
+  if (VK_NULL_HANDLE != image->memory)
+    vkFreeMemory(lgpu->handle, image->memory, NULL);
 
   memset(image, 0, sizeof(*image));
 
   return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_ImageSampler fpx3d_vk_create_image_sampler(Fpx3d_Vk_Context *ctx,
+                                                    Fpx3d_Vk_LogicalGpu *lgpu,
+                                                    bool bilinear_filter,
+                                                    bool anisotropic_filter) {
+  Fpx3d_Vk_ImageSampler retval = {0};
+
+  NULL_CHECK(ctx, retval);
+
+  NULL_CHECK(lgpu, retval);
+  LGPU_CHECK(lgpu, retval);
+
+  _new_image_sampler(ctx, lgpu, VK_SAMPLER_ADDRESS_MODE_REPEAT, bilinear_filter,
+                     anisotropic_filter, &retval);
+
+  return retval;
+}
+
+Fpx3d_E_Result fpx3d_vk_destroy_image_sampler(Fpx3d_Vk_ImageSampler *sampler,
+                                              Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(sampler, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_ARGS_ERROR);
+
+  if (VK_NULL_HANDLE != sampler->handle)
+    vkDestroySampler(lgpu->handle, sampler->handle, NULL);
+
+  memset(sampler, 0, sizeof(*sampler));
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_Vk_Texture fpx3d_vk_create_texture(Fpx3d_Vk_Image *image,
+                                         Fpx3d_Vk_ImageSampler *sampler) {
+  Fpx3d_Vk_Texture retval = {0};
+
+  NULL_CHECK(image, retval);
+  NULL_CHECK(sampler, retval);
+
+  retval.imageReference = image;
+  retval.samplerReference = sampler;
+
+  retval.isValid = true;
+
+  return retval;
+}
+
+size_t fpx3d_vk_get_image_size_bytes(Fpx3d_Vk_Image *image) {
+  NULL_CHECK(image, 0);
+
+  return (size_t)(image->dimensions.width * image->dimensions.height *
+                  image->dimensions.channels * image->dimensions.channelWidth);
 }
 
 bool fpx3d_vk_instance_layers_supported(const char **layers,
@@ -1781,6 +1902,14 @@ Fpx3d_Vk_DescriptorSet fpx3d_vk_create_descriptor_set(
   Fpx3d_Vk_DescriptorSet retval = {0};
 
   NULL_CHECK(bindings, retval);
+
+  for (size_t i = 0; i < binding_count; ++i)
+    if (bindings[i].type == DESC_UNIFORM &&
+        (0 == bindings[i].elementSize || 0 == bindings[i].elementCount)) {
+      // one or more buffer bindings is empty. we do not like that
+      return retval;
+    }
+
   NULL_CHECK(layout, retval);
   NULL_CHECK(ctx, retval);
   NULL_CHECK(lgpu, retval);
@@ -1798,18 +1927,64 @@ Fpx3d_Vk_DescriptorSet fpx3d_vk_create_descriptor_set(
 
   size_t total_mem_size = 0;
 
-#define POOL_TYPE_COUNT 1
+#define POOL_TYPE_COUNT 2
 
+  size_t pool_size_count = 0;
   VkDescriptorPoolSize p_sizes[POOL_TYPE_COUNT] = {0};
-  VkDescriptorPoolSize *uniforms = &p_sizes[0];
-  uniforms->type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  VkDescriptorPoolSize *uniforms = NULL;
+  VkDescriptorPoolSize *image_samplers = NULL;
+
+#define WIND_DOWN_DESCRIPTOR_SET                                               \
+  for (size_t j = 0; j < i; ++j)                                               \
+    if (DESC_IMAGE_SAMPLER == retval.bindings[i].bindingProperties.type)       \
+      FREE_SAFE(retval.bindings[i]                                             \
+                    .bindingProperties.imageSampler.textureReferences);        \
+  FREE_SAFE(retval.bindings);
 
   for (size_t i = 0; i < binding_count; ++i) {
-    if (bindings[i].type == DESC_UNIFORM)
-      uniforms->descriptorCount += bindings[i].elementCount;
-
     retval.bindings[i].bindingProperties = bindings[i];
-    retval.bindings[i].dataOffset = total_mem_size;
+
+    switch (bindings[i].type) {
+    case DESC_UNIFORM:
+      if (NULL == uniforms) {
+        uniforms = &p_sizes[pool_size_count++];
+        uniforms->type = (VkDescriptorType)DESC_UNIFORM;
+      }
+
+      uniforms->descriptorCount += bindings[i].elementCount;
+      retval.bindings[i].dataOffset = total_mem_size;
+      break;
+
+    case DESC_IMAGE_SAMPLER:
+      if (NULL == image_samplers) {
+        image_samplers = &p_sizes[pool_size_count++];
+        image_samplers->type = (VkDescriptorType)DESC_IMAGE_SAMPLER;
+      }
+
+      image_samplers->descriptorCount += bindings[i].elementCount;
+
+      size_t temp = 0;
+      retval.bindings[i].bindingProperties.imageSampler.textureReferences =
+          NULL;
+      FPX3D_ONFAIL(
+          _realloc_array((void **)&retval.bindings[i]
+                             .bindingProperties.imageSampler.textureReferences,
+                         sizeof(bindings[i].imageSampler.textureReferences[0]),
+                         bindings[i].elementCount, &temp),
+          success, WIND_DOWN_DESCRIPTOR_SET;
+          return retval;);
+      memcpy(
+          retval.bindings[i].bindingProperties.imageSampler.textureReferences,
+          bindings[i].imageSampler.textureReferences,
+          sizeof(bindings[i].imageSampler.textureReferences[0]) *
+              bindings[i].elementCount);
+
+      break;
+
+    default:
+      // TODO: proper handling
+      break;
+    }
 
     total_mem_size +=
         bindings[i].elementCount *
@@ -1819,7 +1994,7 @@ Fpx3d_Vk_DescriptorSet fpx3d_vk_create_descriptor_set(
 
   VkDescriptorPoolCreateInfo p_info = {0};
   p_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  p_info.poolSizeCount = POOL_TYPE_COUNT;
+  p_info.poolSizeCount = pool_size_count;
   p_info.pPoolSizes = p_sizes;
   p_info.maxSets = 1;
 
@@ -1860,7 +2035,7 @@ Fpx3d_Vk_DescriptorSet fpx3d_vk_create_descriptor_set(
   if (false == retval.buffer.isValid) {
     FREE_SAFE(retval.bindings);
     vkDestroyDescriptorPool(lgpu->handle, retval.pool, NULL);
-  } else if (FPX3D_SUCCESS != _bind_descriptors_to_buffer(&retval, ctx, lgpu)) {
+  } else if (FPX3D_SUCCESS != _bind_descriptors(&retval, ctx, lgpu)) {
     FREE_SAFE(retval.bindings);
     _destroy_buffer_object(lgpu, &retval.buffer);
 
@@ -2127,35 +2302,24 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
   }
 
   for (uint32_t i = 0; i < frame_count; ++i) {
-    VkImageViewCreateInfo v_info = {0};
+    Fpx3d_Vk_Image temp = {
+        .image = images[i],
+        .imageFormat = props.surfaceFormat.format,
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .baseMipLevel = 0,
+                             .levelCount = 1,
+                             .baseArrayLayer = 0,
+                             .layerCount = 1}};
 
-    v_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    v_info.image = images[i];
-    v_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    v_info.format = props.surfaceFormat.format;
+    VkImageView new_view = _new_image_view(&temp, lgpu);
 
-    v_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-    v_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-    v_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-    v_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-    v_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    v_info.subresourceRange.baseMipLevel = 0;
-    v_info.subresourceRange.levelCount = 1;
-    v_info.subresourceRange.baseArrayLayer = 0;
-    v_info.subresourceRange.layerCount = 1;
-
-    VkResult success =
-        vkCreateImageView(lgpu->handle, &v_info, NULL, &views[i]);
-
-    if (VK_SUCCESS != success) {
-      FPX3D_ERROR("Error while setting up Vulkan swap chain. Code: %d.",
-                  success);
-
+    if (VK_NULL_HANDLE == new_view) {
+      FPX3D_ERROR("Error while creating Vulkan Swapchain image views.");
       DEINITIALIZE_SWAPCHAIN;
-
       return FPX3D_VK_ERROR;
     }
+
+    views[i] = new_view;
   }
 
   Fpx3d_Vk_SwapchainFrame *frames = (Fpx3d_Vk_SwapchainFrame *)calloc(
@@ -2744,7 +2908,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
       }
 
     FREE_SAFE(p->bindings.inFlightDescriptorSets);
-    FREE_SAFE(p->bindings.rawData);
+    FREE_SAFE(p->bindings.rawBufferData);
   }
 
   vkDestroyPipeline(lgpu->handle, p->handle, NULL);
@@ -2964,7 +3128,7 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
 
   Fpx3d_Vk_DescriptorSet *pipeline_ds =
       &pipeline->bindings.inFlightDescriptorSets[lgpu->frameCounter];
-  memcpy(pipeline_ds->buffer.mapped_memory, pipeline->bindings.rawData,
+  memcpy(pipeline_ds->buffer.mapped_memory, pipeline->bindings.rawBufferData,
          pipeline_ds->buffer.objectCount * pipeline_ds->buffer.stride);
 
   for (size_t i = 0; i < pipeline->graphics.shapeCount; ++i) {
@@ -2976,7 +3140,7 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
       continue;
 
     if (NULL != shape->bindings.inFlightDescriptorSets &&
-        NULL != shape->bindings.rawData) {
+        NULL != shape->bindings.rawBufferData) {
       Fpx3d_Vk_DescriptorSet *shape_ds =
           &shape->bindings.inFlightDescriptorSets[lgpu->frameCounter];
 
@@ -2986,7 +3150,7 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
           *buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout.handle,
           PIPELINE_DESCRIPTOR_SET_IDX, 2, bind_sets, 0, NULL);
 
-      memcpy(shape_ds->buffer.mapped_memory, shape->bindings.rawData,
+      memcpy(shape_ds->buffer.mapped_memory, shape->bindings.rawBufferData,
              shape_ds->buffer.objectCount * shape_ds->buffer.stride);
     }
 
@@ -3685,10 +3849,10 @@ static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
   }
 
   VkImageSubresourceRange s_range = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                     .baseArrayLayer = 0,
                                      .baseMipLevel = 0,
-                                     .layerCount = 1,
-                                     .levelCount = 1};
+                                     .levelCount = 1,
+                                     .baseArrayLayer = 0,
+                                     .layerCount = 1};
 
   VkMemoryRequirements mem_reqs = {0};
   vkGetImageMemoryRequirements(lgpu->handle, new_img, &mem_reqs);
@@ -3724,6 +3888,85 @@ static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
 
   output->subresourceRange = s_range;
 
+  output->isValid = true;
+
+  return FPX3D_SUCCESS;
+}
+
+static VkImageView _new_image_view(Fpx3d_Vk_Image *image,
+                                   Fpx3d_Vk_LogicalGpu *lgpu) {
+  NULL_CHECK(image, VK_NULL_HANDLE);
+
+  NULL_CHECK(lgpu, VK_NULL_HANDLE);
+  LGPU_CHECK(lgpu, VK_NULL_HANDLE);
+
+  NULL_CHECK(image->image, VK_NULL_HANDLE);
+
+  VkImageView new_view = {0};
+
+  VkImageViewCreateInfo v_info = {.sType =
+                                      VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                  .image = image->image,
+                                  .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = image->imageFormat,
+                                  .subresourceRange = image->subresourceRange};
+
+  if (VK_SUCCESS != vkCreateImageView(lgpu->handle, &v_info, NULL, &new_view))
+    return VK_NULL_HANDLE;
+
+  return new_view;
+}
+
+static Fpx3d_E_Result _new_image_sampler(Fpx3d_Vk_Context *ctx,
+                                         Fpx3d_Vk_LogicalGpu *lgpu,
+                                         VkSamplerAddressMode addr_mode,
+                                         bool bilinear, bool anisotropy,
+                                         Fpx3d_Vk_ImageSampler *output) {
+  NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ctx->physicalGpu, FPX3D_VK_BAD_GPU_HANDLE_ERROR);
+
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  VkSampler new_sampler = {0};
+
+  if (VK_SAMPLER_ADDRESS_MODE_MAX_ENUM == addr_mode)
+    return FPX3D_ARGS_ERROR;
+
+  VkSamplerCreateInfo s_info = {0};
+  s_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  s_info.magFilter = CONDITIONAL(bilinear, VK_FILTER_LINEAR, VK_FILTER_NEAREST);
+  s_info.minFilter =
+      CONDITIONAL(anisotropy, VK_FILTER_LINEAR, VK_FILTER_NEAREST);
+
+  s_info.addressModeU = addr_mode;
+  s_info.addressModeV = addr_mode;
+  s_info.addressModeW = addr_mode;
+
+  VkPhysicalDeviceProperties dev_props = {0};
+  VkPhysicalDeviceFeatures dev_features = {0};
+  vkGetPhysicalDeviceProperties(ctx->physicalGpu, &dev_props);
+  vkGetPhysicalDeviceFeatures(ctx->physicalGpu, &dev_features);
+
+  s_info.anisotropyEnable = CONDITIONAL(
+      anisotropy && dev_features.samplerAnisotropy, VK_TRUE, VK_FALSE);
+  s_info.maxAnisotropy = dev_props.limits.maxSamplerAnisotropy;
+
+  s_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+  s_info.unnormalizedCoordinates = VK_FALSE;
+
+  s_info.compareEnable = VK_FALSE;
+  s_info.compareOp = VK_COMPARE_OP_ALWAYS;
+
+  s_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  s_info.mipLodBias = 0.0f;
+  s_info.minLod = 0.0f;
+  s_info.maxLod = 0.0f;
+
+  if (VK_SUCCESS != vkCreateSampler(lgpu->handle, &s_info, NULL, &new_sampler))
+    return FPX3D_VK_ERROR;
+
+  output->handle = new_sampler;
   output->isValid = true;
 
   return FPX3D_SUCCESS;
@@ -4406,9 +4649,114 @@ Fpx3d_E_Result _create_all_available_queues(Fpx3d_Vk_LogicalGpu *lgpu) {
   return FPX3D_SUCCESS;
 }
 
-static Fpx3d_E_Result _bind_descriptors_to_buffer(Fpx3d_Vk_DescriptorSet *set,
-                                                  Fpx3d_Vk_Context *ctx,
-                                                  Fpx3d_Vk_LogicalGpu *lgpu) {
+#define CREATE_WRITE_INFO(set, bufinfoptr, imginfoptr, txlinfoptr)             \
+  {                                                                            \
+    VkWriteDescriptorSet *write_set = &w_sets[binding_index];                  \
+    write_set->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;                 \
+    write_set->dstSet = ds->handle;                                            \
+    write_set->dstBinding = binding_index;                                     \
+    write_set->dstArrayElement = 0;                                            \
+    write_set->descriptorCount =                                               \
+        ds->bindings[binding_index].bindingProperties.elementCount;            \
+    write_set->descriptorType =                                                \
+        (VkDescriptorType)ds->bindings[binding_index].bindingProperties.type;  \
+                                                                               \
+    write_set->pBufferInfo = bufinfoptr;                                       \
+    write_set->pImageInfo = imginfoptr;                                        \
+    write_set->pTexelBufferView = txlinfoptr;                                  \
+  }
+
+static Fpx3d_E_Result _create_descriptor_buffer_write_set(
+    VkWriteDescriptorSet *w_sets, Fpx3d_Vk_DescriptorSet *ds,
+    size_t binding_index, size_t buffer_alignment, size_t *buffer_offset) {
+  NULL_CHECK(w_sets, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ds, FPX3D_ARGS_ERROR);
+  NULL_CHECK(buffer_offset, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(ds->bindings, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(ds->handle, FPX3D_VK_BAD_HANDLE_ERROR);
+  NULL_CHECK(ds->buffer.buffer, FPX3D_VK_BAD_HANDLE_ERROR);
+
+  VkDescriptorBufferInfo *b_infos = NULL;
+  b_infos = (VkDescriptorBufferInfo *)calloc(
+      ds->bindings[binding_index].bindingProperties.elementCount,
+      sizeof(VkDescriptorBufferInfo));
+
+  if (NULL == b_infos) {
+    perror("calloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  for (size_t k = 0;
+       k < ds->bindings[binding_index].bindingProperties.elementCount; ++k) {
+    VkDescriptorBufferInfo *b = &b_infos[k];
+    b->buffer = ds->buffer.buffer;
+    b->offset = *buffer_offset;
+    b->range = ds->bindings[binding_index].bindingProperties.elementSize;
+
+    *buffer_offset +=
+        _align_up(ds->bindings[binding_index].bindingProperties.elementSize,
+                  buffer_alignment);
+  }
+
+  CREATE_WRITE_INFO(ds, b_infos, NULL, NULL);
+
+  return FPX3D_SUCCESS;
+}
+
+static Fpx3d_E_Result
+_create_descriptor_image_write_set(VkWriteDescriptorSet *w_sets,
+                                   Fpx3d_Vk_DescriptorSet *ds,
+                                   size_t binding_index) {
+  NULL_CHECK(w_sets, FPX3D_ARGS_ERROR);
+  NULL_CHECK(ds, FPX3D_ARGS_ERROR);
+
+  NULL_CHECK(ds->bindings, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(ds->handle, FPX3D_VK_BAD_HANDLE_ERROR);
+  NULL_CHECK(ds->buffer.buffer, FPX3D_VK_BAD_HANDLE_ERROR);
+
+  VkDescriptorImageInfo *i_infos = NULL;
+  i_infos = (VkDescriptorImageInfo *)calloc(
+      ds->bindings[binding_index].bindingProperties.elementCount,
+      sizeof(VkDescriptorImageInfo));
+
+  if (NULL == i_infos) {
+    perror("calloc()");
+    return FPX3D_MEMORY_ERROR;
+  }
+
+  for (size_t k = 0;
+       k < ds->bindings[binding_index].bindingProperties.elementCount; ++k) {
+    VkDescriptorImageInfo *i = &i_infos[k];
+    Fpx3d_Vk_Texture *tex =
+        ds->bindings[binding_index]
+            .bindingProperties.imageSampler.textureReferences[k];
+
+    if (NULL == tex || NULL == tex->imageReference ||
+        NULL == tex->samplerReference) {
+      FREE_SAFE(i_infos);
+      return FPX3D_VK_NULLPTR_ERROR;
+    }
+
+    i->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    i->imageView = ds->bindings[binding_index]
+                       .bindingProperties.imageSampler.textureReferences[k]
+                       ->imageReference->imageView;
+    i->sampler = ds->bindings[binding_index]
+                     .bindingProperties.imageSampler.textureReferences[k]
+                     ->samplerReference->handle;
+  }
+
+  CREATE_WRITE_INFO(ds, NULL, i_infos, NULL);
+
+  return FPX3D_SUCCESS;
+}
+
+#undef CREATE_WRITE_INFO
+
+static Fpx3d_E_Result _bind_descriptors(Fpx3d_Vk_DescriptorSet *set,
+                                        Fpx3d_Vk_Context *ctx,
+                                        Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(set, FPX3D_ARGS_ERROR);
 
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
@@ -4422,65 +4770,43 @@ static Fpx3d_E_Result _bind_descriptors_to_buffer(Fpx3d_Vk_DescriptorSet *set,
     return FPX3D_MEMORY_ERROR;
   }
 
-  VkDescriptorBufferInfo **b_infos = NULL;
-  b_infos = (VkDescriptorBufferInfo **)calloc(set->bindingCount,
-                                              sizeof(VkDescriptorBufferInfo *));
-  if (NULL == b_infos) {
-    perror("calloc()");
-    FREE_SAFE(w_sets);
-    return FPX3D_MEMORY_ERROR;
+#define FREE_W_SETS                                                            \
+  for (size_t i = 0; i < j; ++i) {                                             \
+    void *temp = (void *)w_sets[i].pBufferInfo;                                \
+    FREE_SAFE(temp);                                                           \
   }
 
   size_t offset_in_buffer = 0;
+
   for (size_t j = 0; j < set->bindingCount; ++j) {
-    b_infos[j] = (VkDescriptorBufferInfo *)calloc(
-        set->bindings[j].bindingProperties.elementCount,
-        sizeof(VkDescriptorBufferInfo));
+    switch (set->bindings[j].bindingProperties.type) {
+    case DESC_UNIFORM:
+      FPX3D_ONFAIL(_create_descriptor_buffer_write_set(
+                       w_sets, set, j, ctx->constants.bufferAlignment,
+                       &offset_in_buffer),
+                   success, FREE_W_SETS;
+                   return success;);
+      break;
 
-    if (NULL == b_infos[j]) {
-      perror("calloc()");
+    case DESC_IMAGE_SAMPLER:
+      FPX3D_ONFAIL(_create_descriptor_image_write_set(w_sets, set, j), success,
+                   FREE_W_SETS;
+                   return success;);
+      break;
 
-      for (size_t k = 0; k < j; ++k)
-        FREE_SAFE(b_infos[k]);
+    default:
+      // bad
 
-      FREE_SAFE(b_infos);
-      FREE_SAFE(w_sets);
-
-      return FPX3D_MEMORY_ERROR;
+      break;
     }
-
-    for (size_t k = 0; k < set->bindings[j].bindingProperties.elementCount;
-         ++k) {
-      b_infos[j][k].buffer = set->buffer.buffer;
-      b_infos[j][k].offset = offset_in_buffer;
-      b_infos[j][k].range = set->bindings[j].bindingProperties.elementSize;
-
-      offset_in_buffer +=
-          _align_up(set->bindings[j].bindingProperties.elementSize,
-                    ctx->constants.bufferAlignment);
-    }
-
-    VkWriteDescriptorSet *write_set = &w_sets[j];
-    write_set->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write_set->dstSet = set->handle;
-    write_set->dstBinding = j;
-    write_set->dstArrayElement = 0;
-    write_set->descriptorCount =
-        set->bindings[j].bindingProperties.elementCount;
-    write_set->descriptorType =
-        (VkDescriptorType)set->bindings[j].bindingProperties.type;
-
-    write_set->pBufferInfo = b_infos[j];
-    write_set->pImageInfo = NULL;
-    write_set->pTexelBufferView = NULL;
   }
 
   vkUpdateDescriptorSets(lgpu->handle, set->bindingCount, w_sets, 0, NULL);
 
   for (size_t i = 0; i < set->bindingCount; ++i) {
-    FREE_SAFE(b_infos[i]);
+    void *temp = (void *)w_sets[i].pBufferInfo;
+    FREE_SAFE(temp);
   }
-  FREE_SAFE(b_infos);
   FREE_SAFE(w_sets);
 
   return FPX3D_SUCCESS;

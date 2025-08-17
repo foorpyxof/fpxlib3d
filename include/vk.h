@@ -6,9 +6,10 @@
 #ifndef FPX_VK_H
 #define FPX_VK_H
 
-#include <sys/types.h>
-
+#define VK_NO_PROTOTYPES
 #include "volk/volk.h"
+
+#include <sys/types.h>
 
 #include "fpx3d.h"
 #include "window.h"
@@ -304,6 +305,8 @@ struct _fpx3d_vk_buffer {
 
 typedef struct _fpx3d_vk_image_dimensions Fpx3d_Vk_ImageDimensions;
 typedef struct _fpx3d_vk_image Fpx3d_Vk_Image;
+typedef struct _fpx3d_vk_image_sampler Fpx3d_Vk_ImageSampler;
+typedef struct _fpx3d_vk_texture Fpx3d_Vk_Texture;
 
 struct _fpx3d_vk_image_dimensions {
   uint32_t width;
@@ -312,11 +315,20 @@ struct _fpx3d_vk_image_dimensions {
   uint32_t channelWidth;
 };
 
+struct _fpx3d_vk_image_sampler {
+  VkSampler handle;
+
+  bool isValid;
+};
+
 struct _fpx3d_vk_image {
   Fpx3d_Vk_ImageDimensions dimensions;
+  size_t (*sizeInBytes)(Fpx3d_Vk_Image *);
 
   VkImage image;
   VkDeviceMemory memory;
+
+  VkImageView imageView;
 
   VkFormat imageFormat;
 
@@ -328,16 +340,35 @@ struct _fpx3d_vk_image {
   bool isValid;
 };
 
-Fpx3d_Vk_Image
-fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *,
-                              Fpx3d_Vk_ImageDimensions dimensions);
+struct _fpx3d_vk_texture {
+  Fpx3d_Vk_Image *imageReference;
+  Fpx3d_Vk_ImageSampler *samplerReference;
 
-Fpx3d_E_Result fpx3d_vk_fill_texture_image(Fpx3d_Vk_Image *, Fpx3d_Vk_Context *,
-                                           Fpx3d_Vk_LogicalGpu *, void *data);
+  bool isValid;
+};
+
+Fpx3d_Vk_Image fpx3d_vk_create_image(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *,
+                                     Fpx3d_Vk_ImageDimensions dimensions);
+
+Fpx3d_E_Result fpx3d_vk_fill_image(Fpx3d_Vk_Image *, Fpx3d_Vk_Context *,
+                                   Fpx3d_Vk_LogicalGpu *, void *data);
 
 Fpx3d_E_Result fpx3d_vk_image_readonly(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
 
 Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+
+Fpx3d_Vk_ImageSampler fpx3d_vk_create_image_sampler(Fpx3d_Vk_Context *,
+                                                    Fpx3d_Vk_LogicalGpu *,
+                                                    bool bilinear_filter,
+                                                    bool anisotropic_filter);
+
+Fpx3d_E_Result fpx3d_vk_destroy_image_sampler(Fpx3d_Vk_ImageSampler *,
+                                              Fpx3d_Vk_LogicalGpu *);
+
+Fpx3d_Vk_Texture fpx3d_vk_create_texture(Fpx3d_Vk_Image *,
+                                         Fpx3d_Vk_ImageSampler *);
+
+size_t fpx3d_vk_get_image_size_bytes(Fpx3d_Vk_Image *);
 
 // DESCRIPTORS -----------------------------------------------------------------
 
@@ -345,7 +376,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
 typedef enum {
   DESC_INVALID = VK_DESCRIPTOR_TYPE_MAX_ENUM,
   DESC_UNIFORM = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-  DESC_IMAGE = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+  DESC_IMAGE_SAMPLER = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 } Fpx3d_Vk_E_DescriptorType;
 typedef struct _fpx3d_vk_descriptor_set_layout Fpx3d_Vk_DescriptorSetLayout;
 typedef struct _fpx3d_vk_descriptor_set_binding Fpx3d_Vk_DescriptorSetBinding;
@@ -362,6 +393,12 @@ struct _fpx3d_vk_descriptor_set_binding {
   size_t elementCount, elementSize;
   Fpx3d_Vk_E_DescriptorType type;
   Fpx3d_Vk_E_ShaderStage shaderStages;
+
+  union {
+    struct {
+      Fpx3d_Vk_Texture **textureReferences;
+    } imageSampler;
+  };
 };
 
 struct _fpx3d_vk_descriptor_set {
@@ -406,6 +443,7 @@ typedef struct _fpx3d_vk_vertex_attr Fpx3d_Vk_VertexAttribute;
 struct _fpx3d_vk_vertex {
   vec3 position;
   vec3 color;
+  vec2 textureCoordinate;
 };
 
 struct _fpx3d_vk_vertex_bundle {
@@ -497,7 +535,7 @@ struct _fpx3d_vk_shape {
 
   struct {
     Fpx3d_Vk_DescriptorSet *inFlightDescriptorSets;
-    void *rawData;
+    void *rawBufferData;
   } bindings;
 
   bool isValid;
@@ -515,10 +553,14 @@ Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
     size_t binding_count, Fpx3d_Vk_DescriptorSetLayout *, Fpx3d_Vk_Context *,
     Fpx3d_Vk_LogicalGpu *);
 
+// NOTE: depending on the type of the binding, the value of the `void *value`
+// argument must differ between:
+// - DESC_UNIFORM -> pointer to the 1:1 data to copy in (like a struct)
+// - DESC_IMAGE_SAMPLER -> pointer to the Fpx3d_Vk_Image object to apply
 Fpx3d_E_Result fpx3d_vk_update_shape_descriptor(Fpx3d_Vk_Shape *,
                                                 size_t binding, size_t element,
-                                                void *value,
-                                                Fpx3d_Vk_Context *);
+                                                void *value, Fpx3d_Vk_Context *,
+                                                Fpx3d_Vk_LogicalGpu *);
 
 // PIPELINES -------------------------------------------------------------------
 
@@ -555,7 +597,7 @@ struct _fpx3d_vk_pipeline {
 
   struct {
     Fpx3d_Vk_DescriptorSet *inFlightDescriptorSets;
-    void *rawData;
+    void *rawBufferData;
   } bindings;
 };
 

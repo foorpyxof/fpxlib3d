@@ -62,7 +62,13 @@ struct model_descriptor square_model = {0};
 struct model_descriptor square_dupe_model = {0};
 struct model_descriptor pyramid_model = {0};
 
+Fpx3d_Vk_Texture flopper_texture = {0};
 Fpx3d_Vk_Image flopper = {0};
+
+Fpx3d_Vk_Texture bingus_texture = {0};
+Fpx3d_Vk_Image bingus = {0};
+
+Fpx3d_Vk_ImageSampler sampler = {0};
 
 bool key_states[GLFW_KEY_LAST + 1] = {0};
 void key_cb(GLFWwindow *wnd, int key, int scancode, int action, int mods) {
@@ -282,7 +288,9 @@ void dest_callback(void *custom_ptr) {
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &square_buffer));
   PRINT_FAILURE(fpx3d_vk_destroy_shapebuffer(lgpu, &pyramid_buffer));
 
+  PRINT_FAILURE(fpx3d_vk_destroy_image_sampler(&sampler, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_image(&flopper, lgpu));
+  PRINT_FAILURE(fpx3d_vk_destroy_image(&bingus, lgpu));
 
   PRINT_FAILURE(fpx3d_vk_destroy_descriptor_set_layout(ds_layout_global, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_descriptor_set_layout(ds_layout_shape, lgpu));
@@ -293,6 +301,7 @@ void dest_callback(void *custom_ptr) {
 
 VkPhysicalDeviceFeatures lgpu_features = {
     .geometryShader = VK_TRUE,
+    .samplerAnisotropy = VK_TRUE,
 };
 
 Fpx3d_Wnd_Context wnd_ctx = {.glfwWindow = NULL,
@@ -374,39 +383,77 @@ void load_shaders(void) {
 }
 
 void load_textures(void) {
-  Fpx3d_Vk_ImageDimensions dims = {0};
-  int width, height, channels;
-  stbi_uc *pixels = stbi_load("images/flopper.jpg", &width, &height, &channels,
-                              STBI_rgb_alpha);
-  dims.width = width;
-  dims.height = height;
-  dims.channels = STBI_rgb_alpha;
-  dims.channelWidth = 1;
+  {
+    Fpx3d_Vk_ImageDimensions dims = {0};
+    int width, height, channels;
+    stbi_uc *pixels = stbi_load("images/flopper.jpg", &width, &height,
+                                &channels, STBI_rgb_alpha);
+    dims.width = width;
+    dims.height = height;
+    dims.channels = STBI_rgb_alpha;
+    dims.channelWidth = 1;
 
-  flopper = fpx3d_vk_create_texture_image(&vk_ctx, lgpu, dims);
-  fpx3d_vk_fill_texture_image(&flopper, &vk_ctx, lgpu, pixels);
-  stbi_image_free(pixels);
-  fpx3d_vk_image_readonly(&flopper, lgpu);
+    flopper = fpx3d_vk_create_image(&vk_ctx, lgpu, dims);
+    fpx3d_vk_fill_image(&flopper, &vk_ctx, lgpu, pixels);
+    stbi_image_free(pixels);
+    fpx3d_vk_image_readonly(&flopper, lgpu);
+
+    flopper_texture = fpx3d_vk_create_texture(&flopper, &sampler);
+  }
+
+  {
+    Fpx3d_Vk_ImageDimensions dims = {0};
+    int width, height, channels;
+    stbi_uc *pixels = stbi_load("images/bingus.jpg", &width, &height, &channels,
+                                STBI_rgb_alpha);
+    dims.width = width;
+    dims.height = height;
+    dims.channels = STBI_rgb_alpha;
+    dims.channelWidth = 1;
+
+    bingus = fpx3d_vk_create_image(&vk_ctx, lgpu, dims);
+    fpx3d_vk_fill_image(&bingus, &vk_ctx, lgpu, pixels);
+    stbi_image_free(pixels);
+    fpx3d_vk_image_readonly(&bingus, lgpu);
+
+    bingus_texture = fpx3d_vk_create_texture(&bingus, &sampler);
+  }
+
+  sampler = fpx3d_vk_create_image_sampler(&vk_ctx, lgpu, false, true);
 }
 
 Fpx3d_Vk_VertexAttribute vertex_attributes[] = {
     {.format = VEC3_32BIT_SFLOAT,
      .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, position)},
     {.format = VEC3_32BIT_SFLOAT,
-     .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, color)}};
+     .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, color)},
+    {.format = VEC2_32BIT_SFLOAT,
+     .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, textureCoordinate)}};
 
 Fpx3d_Vk_VertexBinding vertex_binding = {0};
 void create_shapes(void) {
-  Fpx3d_Vk_Vertex triangle[] = {
-      {.position = {0.0f, -0.5f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}},
-      {.position = {0.5f, 0.5f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}},
-      {.position = {-0.5f, 0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}}};
+  Fpx3d_Vk_Vertex triangle[] = {{.position = {0.0f, -0.5f, 0.0f},
+                                 .color = {1.0f, 0.0f, 0.0f},
+                                 .textureCoordinate = {0.5f, 0.0f}},
+                                {.position = {0.5f, 0.5f, 0.0f},
+                                 .color = {0.0f, 1.0f, 0.0f},
+                                 .textureCoordinate = {0.0f, 1.0f}},
+                                {.position = {-0.5f, 0.5f, 0.0f},
+                                 .color = {0.0f, 0.0f, 1.0f},
+                                 .textureCoordinate = {1.0f, 1.0f}}};
 
-  Fpx3d_Vk_Vertex square[] = {
-      {.position = {-0.25f, -0.25f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}},
-      {.position = {0.25f, -0.25f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}},
-      {.position = {0.25f, 0.25f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}},
-      {.position = {-0.25f, 0.25f, 0.0f}, .color = {1.0f, 1.0f, 1.0f}}};
+  Fpx3d_Vk_Vertex square[] = {{.position = {-0.25f, -0.25f, 0.0f},
+                               .color = {1.0f, 0.0f, 0.0f},
+                               .textureCoordinate = {1.0f, 0.0f}},
+                              {.position = {0.25f, -0.25f, 0.0f},
+                               .color = {0.0f, 1.0f, 0.0f},
+                               .textureCoordinate = {0.0f, 0.0f}},
+                              {.position = {0.25f, 0.25f, 0.0f},
+                               .color = {0.0f, 0.0f, 1.0f},
+                               .textureCoordinate = {0.0f, 1.0f}},
+                              {.position = {-0.25f, 0.25f, 0.0f},
+                               .color = {1.0f, 1.0f, 1.0f},
+                               .textureCoordinate = {1.0f, 1.0f}}};
 
   Fpx3d_Vk_Vertex pyramid[] = {
       {.position = {0.0f, 0.0f, 1.5f}, .color = {1.0f, 1.0f, 1.0f}},
@@ -464,6 +511,9 @@ void create_shapes(void) {
   }
 }
 
+static Fpx3d_Vk_Texture *texture_elements[] = {&flopper_texture,
+                                               &bingus_texture};
+
 Fpx3d_Vk_DescriptorSetBinding pipeline_ds_bindings[] = {
     {.elementCount = 1,
      .elementSize = sizeof(struct vp_descriptor),
@@ -473,7 +523,12 @@ Fpx3d_Vk_DescriptorSetBinding object_ds_bindings[] = {
     {.elementCount = 1,
      .elementSize = sizeof(struct model_descriptor),
      .type = DESC_UNIFORM,
-     .shaderStages = SHADER_STAGE_VERTEX}};
+     .shaderStages = SHADER_STAGE_VERTEX},
+    {.elementCount = 2,
+     .elementSize = 0,
+     .type = DESC_IMAGE_SAMPLER,
+     .shaderStages = SHADER_STAGE_FRAGMENT,
+     .imageSampler = {texture_elements}}};
 void create_descriptor_sets(void) {
   *ds_layout_shape = fpx3d_vk_create_descriptor_set_layout(
       object_ds_bindings, ARRAY_SIZE(object_ds_bindings), lgpu);
@@ -499,10 +554,10 @@ void create_pipelines(void) {
 
 void create_shape_descriptors(void) {
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
-      &triangle_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
+      &square_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
       ds_layout_shape, &vk_ctx, lgpu));
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
-      &square_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
+      &triangle_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
       ds_layout_shape, &vk_ctx, lgpu));
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
       &pyramid_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
@@ -578,12 +633,13 @@ int main(int argc, const char **argv) {
   glm_translate(pyramid_model.model, pyramid_pos);
 
   fpx3d_vk_update_shape_descriptor(&triangle_shape, 0, 0, &triangle_model,
-                                   &vk_ctx);
-  fpx3d_vk_update_shape_descriptor(&square_shape, 0, 0, &square_model, &vk_ctx);
+                                   &vk_ctx, lgpu);
+  fpx3d_vk_update_shape_descriptor(&square_shape, 0, 0, &square_model, &vk_ctx,
+                                   lgpu);
   fpx3d_vk_update_shape_descriptor(&square_dupe, 0, 0, &square_dupe_model,
-                                   &vk_ctx);
+                                   &vk_ctx, lgpu);
   fpx3d_vk_update_shape_descriptor(&pyramid_shape, 0, 0, &pyramid_model,
-                                   &vk_ctx);
+                                   &vk_ctx, lgpu);
 
   if (NULL == vk_ctx.windowContext->glfwWindow)
     exit(EXIT_FAILURE);
@@ -592,11 +648,11 @@ int main(int argc, const char **argv) {
 
   float delta = 0.02f;
 
-#if !(defined(_WIN32) || defined(_WIN64))
+  // #if !(defined(_WIN32) || defined(_WIN64))
   struct timespec frametimes[2] = {0};
 
   clock_gettime(CLOCK_REALTIME, &frametimes[0]);
-#endif
+  // #endif
 
   float plane_speed = 1.0f;
   float sign = 1;
@@ -675,26 +731,26 @@ int main(int argc, const char **argv) {
     glm_translate(square_model.model, tran);
     glm_rotate(square_model.model, glm_rad(1080.0f * delta), right);
     fpx3d_vk_update_shape_descriptor(&square_shape, 0, 0, &square_model,
-                                     &vk_ctx);
+                                     &vk_ctx, lgpu);
 
     glm_rotate(square_dupe_model.model, glm_rad(180.0f * delta), up);
     fpx3d_vk_update_shape_descriptor(&square_dupe, 0, 0, &square_dupe_model,
-                                     &vk_ctx);
+                                     &vk_ctx, lgpu);
 
     glm_rotate(pyramid_model.model, glm_rad(45.0f * delta), up);
     fpx3d_vk_update_shape_descriptor(&pyramid_shape, 0, 0, &pyramid_model,
-                                     &vk_ctx);
+                                     &vk_ctx, lgpu);
 
     PRINT_FAILURE(fpx3d_vk_draw_frame(&vk_ctx, lgpu, pipeline, 1,
                                       graphics_queue, present_queue));
 
-#if !(defined(_WIN32) || defined(_WIN64))
+    // #if !(defined(_WIN32) || defined(_WIN64))
     clock_gettime(CLOCK_REALTIME, &frametimes[1]);
     delta =
         (float)(frametimes[1].tv_sec - frametimes[0].tv_sec) +
         (float)(frametimes[1].tv_nsec / 1.0e9 - frametimes[0].tv_nsec / 1.0e9);
     clock_gettime(CLOCK_REALTIME, &frametimes[0]);
-#endif
+    // #endif
   }
 
   PRINT_FAILURE(fpx3d_vk_destroy_window(&vk_ctx, dest_callback));
