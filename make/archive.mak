@@ -10,7 +10,7 @@ MODULES := $(wildcard $(MODULES_DIR)/*)
 LICENSES = $(wildcard $(module)/LICENSE*)
 LICENSES_DIR := third_party_licenses
 
-ifeq ($(TARGET), $(WINDOWS_TARGET_NAME))
+ifeq ($(TARGET),$(WINDOWS_TARGET_NAME))
 	ARCHIVE_COMMAND := zip -qr
 	ARCHIVE_EXTENSION := zip
 

@@ -59,7 +59,7 @@
 
 #endif // FPX3D_DEBUG_ENABLE
 
-#ifndef FPX3D_SILENT_ERROR
+#if defined(FPX3D_DEBUG_ENABLE) || !defined(FPX3D_SILENT_ERROR)
 #undef FPX3D_ERROR
 #define FPX3D_ERROR(fmt, ...)                                                  \
   {                                                                            \
@@ -70,7 +70,7 @@
             "\033[0m (at %s)\n" __VA_OPT__(, ) __VA_ARGS__,                    \
             _fpx_lineinfo_output_buffer);                                      \
   }
-#endif // FPX3D_SILENT_ERROR
+#endif // FPX3D_DEBUG_ENABLE || !FPX3D_SILENT_ERROR
 
 #undef LIBRARY_NAME
 

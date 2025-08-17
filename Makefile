@@ -9,26 +9,33 @@ CC_WIN32 := x86_64-w64-mingw32-gcc
 include make/early.mak
 
 WINDOWS_TARGET_NAME := win64
+LINUX_TARGET_NAME := linux
 
 DEBUG_SUFFIX := _debug
 
-ifeq ($(WINDOWS), true)
+ifeq ($(WINDOWS),true)
+	TARGET := $(WINDOWS_TARGET_NAME)
+else
+	TARGET := $(LINUX_TARGET_NAME)
+endif
 
-	TARGET := win64
+include make/*.mk
+
+ifeq ($(TARGET),$(WINDOWS_TARGET_NAME))
 
 	-include make/windows/*.mk
 
 	CC := $(CC_WIN32)
 	CFLAGS += -mwindows -DVK_USE_PLATFORM_WIN32_KHR
 	LDFLAGS += -lglfw3
-	# LDFLAGS += -lwinpthread-1
+
+	# mingw/bin/libwinpthread.dll.a import library
+	LDFLAGS += -lwinpthread.dll
 	
 	EXE_EXT := .exe
 	OBJ_EXT := .obj
 
 else
-
-	TARGET := linux
 
 ifeq ($(CC),)
 	CC != which cc
@@ -41,13 +48,12 @@ endif
 
 endif
 
-include make/*.mk
-
 EXE_EXT := $(TARGET)$(EXE_EXT)
 
-LIB_OBJECTS := vk
-
 include make/variables.mak
+include make/dll.mak
+
+LIB_OBJECTS := vk
 
 all: libs shaders
 
@@ -76,9 +82,12 @@ $(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)
 
 $(RELEASE_APP): LDFLAGS += -s
 $(RELEASE_APP): $(OBJECTS_RELEASE) $(MAIN_C)
+	@echo target: $(TARGET)
+	if [[ "$(WINDOWS)" == "true" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
 	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(RELEASE_FLAGS) $^ -o $@
 
 $(DEBUG_APP): $(OBJECTS_DEBUG) $(MAIN_C)
+	if [[ "$(WINDOWS)" == "true" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
 	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(DEBUG_FLAGS) $^ -o $@
 
 $(SHADER_FILES): %.spv: %

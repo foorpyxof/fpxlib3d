@@ -13,6 +13,8 @@ for i in "$@"; do
 
   TARGET=$(echo -n "$i" | tr "[:lower:]" "[:upper:]")
 
+  make clean >/dev/null 2>&1
+
   tput setaf 33
   printf "\nBuilding for target %s\n" $i
   tput setaf sgr0
@@ -24,9 +26,5 @@ for i in "$@"; do
   printf "\nPacking for target %s\n" $i
   tput setaf sgr0
   make archive ${TARGET}=true
-  RES=$?
-  make clean
-
-  if [[ $RES -ne 0 ]]; then break $?; fi
 
 done
