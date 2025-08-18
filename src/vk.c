@@ -27,6 +27,8 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <vulkan/vulkan_core.h>
+
 // EXTERNALS
 #include "GLFW/glfw3.h"
 // END OF EXTERNALS
@@ -63,7 +65,7 @@
     FPX3D_LINE_INFO(_fpx_lineinfo_output_buffer);                              \
     FPX3D_DEBUG("Variable %s is unused (at: %s)", #var,                        \
                 _fpx_lineinfo_output_buffer);                                  \
-    if (fmt) {                                                                 \
+    if (var) {                                                                 \
     }                                                                          \
   }
 
@@ -91,14 +93,14 @@ struct fpx3d_vulkan_pool_queue_pair {
   Fpx3d_Vk_E_QueueType type;
 };
 
-static VkFormat _fpx3d_vk_formats_lookup_table[][5] = {
+static VkFormat _fpx3d_vk_texture_formats_table[][5] = {
     {0, 0, 0, 0, 0},
     {0, VK_FORMAT_R8_SRGB, VK_FORMAT_R8G8_SRGB, VK_FORMAT_R8G8B8_SRGB,
      VK_FORMAT_R8G8B8A8_SRGB}};
 
 #define VALID_FORMAT_INDEX(idx)                                                \
-  ((ARRAY_SIZE(_fpx3d_vk_formats_lookup_table) *                               \
-    ARRAY_SIZE(_fpx3d_vk_formats_lookup_table[0])) < (idx))
+  ((ARRAY_SIZE(_fpx3d_vk_texture_formats_table) *                              \
+    ARRAY_SIZE(_fpx3d_vk_texture_formats_table[0])) < (idx))
 
 //
 //  START OF STATIC FUNCTION DECLARATIONS
@@ -161,13 +163,14 @@ static Fpx3d_E_Result _vk_buf_to_image(VkBuffer, Fpx3d_Vk_Image *,
 static struct fpx3d_vulkan_pool_queue_pair
 _graphics_pool_and_queue(Fpx3d_Vk_LogicalGpu *lgpu);
 
-static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
-                                 Fpx3d_Vk_LogicalGpu *lgpu,
-                                 Fpx3d_Vk_ImageDimensions, VkFormat fmt,
-                                 VkImageTiling tiling, VkImageUsageFlags usage,
-                                 Fpx3d_Vk_Image *output);
+static Fpx3d_E_Result
+_new_image(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+           Fpx3d_Vk_ImageDimensions, VkFormat fmt, VkImageTiling tiling,
+           VkImageSubresourceRange s_range, VkImageUsageFlags usage,
+           Fpx3d_Vk_Image *output);
 
-static VkImageView _new_image_view(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+static Fpx3d_E_Result _new_image_view(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *,
+                                      VkImageView *output);
 
 static Fpx3d_E_Result _new_image_sampler(Fpx3d_Vk_Context *,
                                          Fpx3d_Vk_LogicalGpu *,
@@ -210,8 +213,8 @@ static Fpx3d_E_Result _destroy_swapchain(Fpx3d_Vk_LogicalGpu *,
 
 static Fpx3d_E_Result _retire_current_swapchain(Fpx3d_Vk_LogicalGpu *);
 
-static VkExtent2D _new_swapchain_extent(Fpx3d_Wnd_Context *wnd,
-                                        VkSurfaceCapabilitiesKHR cap);
+static VkExtent2D _new_window_extent(Fpx3d_Wnd_Context *wnd,
+                                     VkSurfaceCapabilitiesKHR cap);
 
 static Fpx3d_E_Result _construct_command_pool(Fpx3d_Vk_LogicalGpu *,
                                               Fpx3d_Vk_CommandPool *,
@@ -246,6 +249,9 @@ _create_descriptor_image_write_set(VkWriteDescriptorSet *w_sets,
 static Fpx3d_E_Result _bind_descriptors(Fpx3d_Vk_DescriptorSet *,
                                         Fpx3d_Vk_Context *,
                                         Fpx3d_Vk_LogicalGpu *);
+
+static VkFormat _supported_format(VkFormat *fmts, size_t count, VkImageTiling,
+                                  VkFormatFeatureFlags, VkPhysicalDevice);
 //
 //  END OF STATIC FUNCTION DECLARATIONS
 //
@@ -953,43 +959,104 @@ fpx3d_vk_destroy_shadermodules(Fpx3d_Vk_ShaderModuleSet *to_destroy,
 
 #undef DESTROY_IF_EXISTS
 
-Fpx3d_Vk_Image fpx3d_vk_create_image(Fpx3d_Vk_Context *ctx,
-                                     Fpx3d_Vk_LogicalGpu *lgpu,
-                                     Fpx3d_Vk_ImageDimensions dimensions) {
+#define CHECK_DIMENSIONS(d, ret)                                               \
+  if (1 > d.channels || 1 > d.height || 1 > d.width || 1 > d.channelWidth)     \
+    return ret;
+
+Fpx3d_Vk_Image
+fpx3d_vk_create_depth_image(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
+                            Fpx3d_Vk_ImageDimensions dimensions) {
+  Fpx3d_Vk_Image retval = {0};
+  NULL_CHECK(ctx, retval);
+
+  NULL_CHECK(lgpu, retval);
+  LGPU_CHECK(lgpu, retval);
+
+  if (1 > dimensions.width || 1 > dimensions.height)
+    return retval;
+
+  VkImageSubresourceRange s_range = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                     .baseArrayLayer = 0,
+                                     .layerCount = 1,
+                                     .baseMipLevel = 0,
+                                     .levelCount = 1};
+
+  VkFormat choices[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
+                        VK_FORMAT_D24_UNORM_S8_UINT};
+  VkFormat depth_format = _supported_format(
+      choices, ARRAY_SIZE(choices), VK_IMAGE_TILING_OPTIMAL,
+      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, ctx->physicalGpu);
+
+  // if no valid depth formats found
+  if (VK_FORMAT_UNDEFINED == depth_format)
+    return retval;
+
+  if (depth_format != choices[0]) {
+    // the format has a stencil component (S8_UINT)
+    s_range.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+  }
+
+  FPX3D_ONFAIL(_new_image(ctx->physicalGpu, lgpu, dimensions, depth_format,
+                          VK_IMAGE_TILING_OPTIMAL, s_range,
+                          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, &retval),
+               success, return retval;);
+
+  struct fpx3d_vulkan_pool_queue_pair pair = _graphics_pool_and_queue(lgpu);
+  _transition_image_layout(retval.image, depth_format, &retval.imageLayout,
+                           VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                           s_range, *pair.pool, *pair.queue, lgpu->handle);
+
+  VkImageView new_view = {0};
+  FPX3D_ONFAIL(_new_image_view(&retval, lgpu, &new_view), success,
+               fpx3d_vk_destroy_image(&retval, lgpu);
+               return retval;);
+
+  retval.imageView = new_view;
+
+  return retval;
+}
+
+Fpx3d_Vk_Image
+fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
+                              Fpx3d_Vk_ImageDimensions dimensions) {
   Fpx3d_Vk_Image retval = {0};
   NULL_CHECK(ctx, retval);
   NULL_CHECK(lgpu, retval);
   LGPU_CHECK(lgpu, retval);
-
-  if (1 > dimensions.channels || 1 > dimensions.height ||
-      1 > dimensions.width || 1 > dimensions.channelWidth)
-    return retval;
 
   if (VALID_FORMAT_INDEX(dimensions.channels * dimensions.channelWidth)) {
     // lookup table index out of range
     return retval;
   }
 
-  VkFormat fmt = _fpx3d_vk_formats_lookup_table[dimensions.channelWidth]
-                                               [dimensions.channels];
+  CHECK_DIMENSIONS(dimensions, retval);
+
+  VkFormat fmt = _fpx3d_vk_texture_formats_table[dimensions.channelWidth]
+                                                [dimensions.channels];
+
+  VkImageSubresourceRange s_range = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     .baseMipLevel = 0,
+                                     .levelCount = 1,
+                                     .baseArrayLayer = 0,
+                                     .layerCount = 1};
 
   FPX3D_ONFAIL(_new_image(ctx->physicalGpu, lgpu, dimensions, fmt,
-                          VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT,
-                          &retval),
+                          VK_IMAGE_TILING_OPTIMAL, s_range,
+                          VK_IMAGE_USAGE_SAMPLED_BIT, &retval),
                success, return retval;);
 
-  VkImageView new_view = _new_image_view(&retval, lgpu);
-
-  if (VK_NULL_HANDLE == new_view) {
-    fpx3d_vk_destroy_image(&retval, lgpu);
-    return retval;
-  }
+  VkImageView new_view = {0};
+  FPX3D_ONFAIL(_new_image_view(&retval, lgpu, &new_view), success,
+               fpx3d_vk_destroy_image(&retval, lgpu);
+               return retval;);
 
   retval.imageView = new_view;
   retval.sizeInBytes = fpx3d_vk_get_image_size_bytes;
 
   return retval;
 }
+
+#undef CHECK_DIMENSIONS
 
 Fpx3d_E_Result fpx3d_vk_fill_image(Fpx3d_Vk_Image *img, Fpx3d_Vk_Context *ctx,
                                    Fpx3d_Vk_LogicalGpu *lgpu, void *data) {
@@ -1195,8 +1262,9 @@ bool fpx3d_vk_device_extensions_supported(VkPhysicalDevice dev,
 }
 
 Fpx3d_Vk_SwapchainProperties
-fpx3d_vk_get_swapchain_support(Fpx3d_Vk_Context *ctx, VkPhysicalDevice dev,
-                               Fpx3d_Vk_SwapchainRequirements reqs) {
+fpx3d_vk_create_swapchain_properties(Fpx3d_Vk_Context *ctx,
+                                     VkPhysicalDevice dev,
+                                     Fpx3d_Vk_SwapchainRequirements reqs) {
   Fpx3d_Vk_SwapchainProperties props = {0};
 
   const char *ext = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -2077,16 +2145,20 @@ Fpx3d_E_Result fpx3d_vk_allocate_renderpasses(Fpx3d_Vk_LogicalGpu *lgpu,
 }
 
 Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
-                                             size_t index) {
+                                             size_t index,
+                                             Fpx3d_Vk_Context *ctx) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
   NULL_CHECK(lgpu->renderPasses, FPX3D_VK_NULLPTR_ERROR);
 
+  UNUSED(ctx);
+
   if (lgpu->renderPassCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
 
-  if (VK_FORMAT_UNDEFINED == lgpu->currentSwapchain.imageFormat) {
+  if (VK_FORMAT_UNDEFINED ==
+      lgpu->currentSwapchain.properties.surfaceFormat.format) {
     return FPX3D_VK_ERROR;
   }
 
@@ -2099,7 +2171,8 @@ Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
   VkRenderPass pass = VK_NULL_HANDLE;
 
   VkAttachmentDescription color_attachment = {0};
-  color_attachment.format = lgpu->currentSwapchain.imageFormat;
+  color_attachment.format =
+      lgpu->currentSwapchain.properties.surfaceFormat.format;
   color_attachment.samples = VK_SAMPLE_COUNT_1_BIT; // TODO: multisampling
 
   color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -2148,16 +2221,16 @@ Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
     }
   }
 
-  if (VK_NULL_HANDLE != lgpu->renderPasses[index])
-    vkDestroyRenderPass(lgpu->handle, lgpu->renderPasses[index], NULL);
+  if (VK_NULL_HANDLE != lgpu->renderPasses[index].handle)
+    vkDestroyRenderPass(lgpu->handle, lgpu->renderPasses[index].handle, NULL);
 
-  lgpu->renderPasses[index] = pass;
+  lgpu->renderPasses[index].handle = pass;
 
   return FPX3D_SUCCESS;
 }
 
-VkRenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
-                                         size_t index) {
+Fpx3d_Vk_RenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                                size_t index) {
   NULL_CHECK(lgpu, NULL);
   NULL_CHECK(lgpu->renderPasses, NULL);
 
@@ -2177,9 +2250,10 @@ Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
   if (lgpu->renderPassCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
 
-  vkDestroyRenderPass(lgpu->handle, lgpu->renderPasses[index], NULL);
+  if (VK_NULL_HANDLE != lgpu->renderPasses[index].handle)
+    vkDestroyRenderPass(lgpu->handle, lgpu->renderPasses[index].handle, NULL);
 
-  lgpu->renderPasses[index] = VK_NULL_HANDLE;
+  lgpu->renderPasses[index].handle = VK_NULL_HANDLE;
 
   return FPX3D_SUCCESS;
 }
@@ -2196,7 +2270,7 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu->presentQueues.queues, FPX3D_NO_CAPACITY_ERROR);
 
   Fpx3d_Vk_SwapchainProperties props =
-      fpx3d_vk_get_swapchain_support(ctx, ctx->physicalGpu, sc_reqs);
+      fpx3d_vk_create_swapchain_properties(ctx, ctx->physicalGpu, sc_reqs);
 
   if (0 == lgpu->graphicsQueues.count || 0 == lgpu->graphicsQueues.count)
     return FPX3D_NO_CAPACITY_ERROR;
@@ -2207,7 +2281,7 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
   const VkSurfaceCapabilitiesKHR cap = props.surfaceCapabilities;
 
   VkSwapchainCreateInfoKHR s_info = {0};
-  VkExtent2D extent = _new_swapchain_extent(ctx->windowContext, cap);
+  VkExtent2D extent = _new_window_extent(ctx->windowContext, cap);
 
   uint32_t qf_indices[2] = {lgpu->graphicsQueues.queueFamilyIndex,
                             lgpu->presentQueues.queueFamilyIndex};
@@ -2311,13 +2385,12 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
                              .baseArrayLayer = 0,
                              .layerCount = 1}};
 
-    VkImageView new_view = _new_image_view(&temp, lgpu);
+    VkImageView new_view = {0};
+    FPX3D_ONFAIL(
+        _new_image_view(&temp, lgpu, &new_view), success,
 
-    if (VK_NULL_HANDLE == new_view) {
-      FPX3D_ERROR("Error while creating Vulkan Swapchain image views.");
-      DEINITIALIZE_SWAPCHAIN;
-      return FPX3D_VK_ERROR;
-    }
+        FPX3D_ERROR("Error while creating Vulkan Swapchain image views.");
+        DEINITIALIZE_SWAPCHAIN; return success;);
 
     views[i] = new_view;
   }
@@ -2384,11 +2457,16 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
 
   lgpu->currentSwapchain.requirements = sc_reqs;
   lgpu->currentSwapchain.properties = props;
-  lgpu->currentSwapchain.imageFormat = props.surfaceFormat.format;
   lgpu->currentSwapchain.swapchain = new_swapchain;
   lgpu->currentSwapchain.swapchainExtent = extent;
   lgpu->currentSwapchain.frames = frames;
   lgpu->currentSwapchain.frameCount = frame_count;
+
+  // TODO: depth
+  // Fpx3d_Vk_ImageDimensions depth_dimensions = {.width = extent.width,
+  //                                              .height = extent.height};
+  // lgpu->currentSwapchain.depthImage =
+  //     fpx3d_vk_create_depth_image(ctx, lgpu, depth_dimensions);
 
   return FPX3D_SUCCESS;
 }
@@ -2414,6 +2492,9 @@ Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *ctx,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
+  if (VK_NULL_HANDLE == lgpu->currentSwapchain.swapchain)
+    return FPX3D_VK_SWAPCHAIN_INVALID_ERROR;
+
   int width = 0, height = 0;
   glfwGetFramebufferSize(ctx->windowContext->glfwWindow, &width, &height);
 
@@ -2422,12 +2503,36 @@ Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *ctx,
     glfwWaitEvents();
   }
 
-  Fpx3d_Vk_Swapchain *old_chain = fpx3d_vk_get_current_swapchain(lgpu);
-  VkRenderPass *pass = old_chain->renderPassReference;
   vkDeviceWaitIdle(lgpu->handle);
+
+  Fpx3d_Vk_Swapchain *old_chain = fpx3d_vk_get_current_swapchain(lgpu);
+  Fpx3d_Vk_RenderPass *old_pass = old_chain->renderPassReference;
+
   fpx3d_vk_create_swapchain(ctx, lgpu, lgpu->currentSwapchain.requirements);
   Fpx3d_Vk_Swapchain *new_chain = fpx3d_vk_get_current_swapchain(lgpu);
-  fpx3d_vk_create_framebuffers(new_chain, lgpu, pass);
+
+  VkExtent2D h_w = _new_window_extent(
+      ctx->windowContext, new_chain->properties.surfaceCapabilities);
+  Fpx3d_Vk_ImageDimensions depth_dimensions = {.width = h_w.width,
+                                               .height = h_w.height};
+
+  fpx3d_vk_create_depth_image(ctx, lgpu, depth_dimensions);
+  fpx3d_vk_create_framebuffers(new_chain, lgpu, old_pass);
+
+  return FPX3D_SUCCESS;
+}
+
+Fpx3d_E_Result fpx3d_vk_set_swapchain_depth_image(Fpx3d_Vk_Swapchain *sc,
+                                                  Fpx3d_Vk_Image image) {
+  NULL_CHECK(sc, FPX3D_ARGS_ERROR);
+  if (false == image.isValid)
+    return FPX3D_ARGS_ERROR;
+
+  if (sc->swapchainExtent.width != image.dimensions.width ||
+      sc->swapchainExtent.height != image.dimensions.height)
+    return FPX3D_ARGS_ERROR;
+
+  sc->depthImage = image;
 
   return FPX3D_SUCCESS;
 }
@@ -2484,7 +2589,7 @@ Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *sc,
 
 Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
                                             Fpx3d_Vk_LogicalGpu *lgpu,
-                                            VkRenderPass *render_pass) {
+                                            Fpx3d_Vk_RenderPass *render_pass) {
   NULL_CHECK(sc, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
@@ -2497,7 +2602,7 @@ Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
 
     VkFramebufferCreateInfo fb_info = {0};
     fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_info.renderPass = *render_pass;
+    fb_info.renderPass = render_pass->handle;
     fb_info.attachmentCount = 1;
     fb_info.pAttachments = &sc->frames[i].view;
     fb_info.width = sc->swapchainExtent.width;
@@ -2614,12 +2719,12 @@ Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *lgpu,
 
 Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
     Fpx3d_Vk_LogicalGpu *lgpu, size_t index, Fpx3d_Vk_PipelineLayout *p_layout,
-    VkRenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
+    Fpx3d_Vk_RenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
     Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(shaders, FPX3D_ARGS_ERROR);
   NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
-  NULL_CHECK(*render_pass, FPX3D_ARGS_ERROR);
+  NULL_CHECK(render_pass->handle, FPX3D_ARGS_ERROR);
   LGPU_CHECK(lgpu, FPX3D_VK_LGPU_INVALID_ERROR);
 
   NULL_CHECK(lgpu->pipelines, FPX3D_VK_NULLPTR_ERROR);
@@ -2834,7 +2939,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
 
     p_info.layout = p_layout->handle;
 
-    p_info.renderPass = *render_pass;
+    p_info.renderPass = render_pass->handle;
     p_info.subpass = 0;
 
     p_info.basePipelineHandle = VK_NULL_HANDLE;
@@ -3062,7 +3167,7 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
   if (VK_NULL_HANDLE == *buffer)
     return FPX3D_VK_BAD_BUFFER_HANDLE_ERROR;
 
-  if (VK_NULL_HANDLE == *(pipeline->graphics.renderPassReference))
+  if (VK_NULL_HANDLE == pipeline->graphics.renderPassReference->handle)
     return FPX3D_VK_BAD_RENDER_PASS_HANDLE_ERROR;
 
   if (VK_NULL_HANDLE == pipeline->handle)
@@ -3084,7 +3189,7 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
 
   VkRenderPassBeginInfo r_info = {0};
   r_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  r_info.renderPass = *(pipeline->graphics.renderPassReference);
+  r_info.renderPass = pipeline->graphics.renderPassReference->handle;
   r_info.framebuffer = swapchain->frames[frame_index].framebuffer;
 
   r_info.renderArea.extent = swapchain->swapchainExtent;
@@ -3711,6 +3816,12 @@ _transition_image_layout(VkImage img, VkFormat fmt, VkImageLayout *old,
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     break;
 
+  case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+    dstStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    break;
+
   default:
     FPX3D_ERROR("Image layout transition to %u not implemented", new);
     return FPX3D_GENERIC_ERROR;
@@ -3789,12 +3900,11 @@ _graphics_pool_and_queue(Fpx3d_Vk_LogicalGpu *lgpu) {
   return pair;
 }
 
-static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
-                                 Fpx3d_Vk_LogicalGpu *lgpu,
-                                 Fpx3d_Vk_ImageDimensions dimensions,
-                                 VkFormat fmt, VkImageTiling tiling,
-                                 VkImageUsageFlags usage,
-                                 Fpx3d_Vk_Image *output) {
+static Fpx3d_E_Result
+_new_image(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
+           Fpx3d_Vk_ImageDimensions dimensions, VkFormat fmt,
+           VkImageTiling tiling, VkImageSubresourceRange s_range,
+           VkImageUsageFlags usage, Fpx3d_Vk_Image *output) {
   NULL_CHECK(output, FPX3D_ARGS_ERROR);
   NULL_CHECK(dev, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
@@ -3822,9 +3932,10 @@ static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
 
   u_flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-  m_flags &= ~(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  m_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  // m_flags &= ~(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+  //              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  // m_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  m_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
   VkImage new_img = {0};
   VkDeviceMemory new_mem = {0};
@@ -3847,12 +3958,6 @@ static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
     FPX3D_WARN("Failed to create new VkImage");
     return FPX3D_VK_ERROR;
   }
-
-  VkImageSubresourceRange s_range = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                     .baseMipLevel = 0,
-                                     .levelCount = 1,
-                                     .baseArrayLayer = 0,
-                                     .layerCount = 1};
 
   VkMemoryRequirements mem_reqs = {0};
   vkGetImageMemoryRequirements(lgpu->handle, new_img, &mem_reqs);
@@ -3893,14 +3998,15 @@ static Fpx3d_E_Result _new_image(VkPhysicalDevice dev,
   return FPX3D_SUCCESS;
 }
 
-static VkImageView _new_image_view(Fpx3d_Vk_Image *image,
-                                   Fpx3d_Vk_LogicalGpu *lgpu) {
-  NULL_CHECK(image, VK_NULL_HANDLE);
+static Fpx3d_E_Result _new_image_view(Fpx3d_Vk_Image *image,
+                                      Fpx3d_Vk_LogicalGpu *lgpu,
+                                      VkImageView *output) {
+  NULL_CHECK(image, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(lgpu, VK_NULL_HANDLE);
-  LGPU_CHECK(lgpu, VK_NULL_HANDLE);
+  NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
+  LGPU_CHECK(lgpu, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(image->image, VK_NULL_HANDLE);
+  NULL_CHECK(image->image, FPX3D_VK_LGPU_INVALID_ERROR);
 
   VkImageView new_view = {0};
 
@@ -3912,9 +4018,12 @@ static VkImageView _new_image_view(Fpx3d_Vk_Image *image,
                                   .subresourceRange = image->subresourceRange};
 
   if (VK_SUCCESS != vkCreateImageView(lgpu->handle, &v_info, NULL, &new_view))
-    return VK_NULL_HANDLE;
+    return FPX3D_VK_ERROR;
 
-  return new_view;
+  FPX3D_DEBUG("Created new VkImageView %p", (void *)new_view);
+
+  *output = new_view;
+  return FPX3D_SUCCESS;
 }
 
 static Fpx3d_E_Result _new_image_sampler(Fpx3d_Vk_Context *ctx,
@@ -4117,10 +4226,8 @@ static void _destroy_lgpu(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
   FPX3D_DEBUG(" - swapchains destroyed");
 
   if (NULL != lgpu->renderPasses)
-    for (size_t i = 0; i < lgpu->renderPassCapacity; ++i) {
-      if (VK_NULL_HANDLE != lgpu->renderPasses[i])
-        fpx3d_vk_destroy_renderpass_at(lgpu, i);
-    }
+    for (size_t i = 0; i < lgpu->renderPassCapacity; ++i)
+      fpx3d_vk_destroy_renderpass_at(lgpu, i);
 
   FREE_SAFE(lgpu->renderPasses);
   lgpu->renderPassCapacity = 0;
@@ -4344,6 +4451,8 @@ static Fpx3d_E_Result _destroy_swapchain(Fpx3d_Vk_LogicalGpu *lgpu,
   if (VK_NULL_HANDLE != sc->swapchain)
     vkDestroySwapchainKHR(lgpu->handle, sc->swapchain, NULL);
 
+  fpx3d_vk_destroy_image(&sc->depthImage, lgpu);
+
   memset(sc, 0, sizeof(*sc));
 
   return FPX3D_SUCCESS;
@@ -4380,8 +4489,8 @@ static Fpx3d_E_Result _retire_current_swapchain(Fpx3d_Vk_LogicalGpu *lgpu) {
   return FPX3D_SUCCESS;
 }
 
-static VkExtent2D _new_swapchain_extent(Fpx3d_Wnd_Context *wnd,
-                                        VkSurfaceCapabilitiesKHR cap) {
+static VkExtent2D _new_window_extent(Fpx3d_Wnd_Context *wnd,
+                                     VkSurfaceCapabilitiesKHR cap) {
   VkExtent2D retval = {0};
   NULL_CHECK(wnd, retval);
 
@@ -4810,6 +4919,29 @@ static Fpx3d_E_Result _bind_descriptors(Fpx3d_Vk_DescriptorSet *set,
   FREE_SAFE(w_sets);
 
   return FPX3D_SUCCESS;
+}
+
+static VkFormat _supported_format(VkFormat *fmts, size_t count,
+                                  VkImageTiling tiling,
+                                  VkFormatFeatureFlags features,
+                                  VkPhysicalDevice dev) {
+  for (size_t i = 0; i < count; ++i) {
+    VkFormatProperties props = {0};
+    vkGetPhysicalDeviceFormatProperties(dev, fmts[i], &props);
+
+    VkFormatFeatureFlags supported_features = {0};
+
+    if (VK_IMAGE_TILING_LINEAR == tiling) {
+      supported_features = props.linearTilingFeatures & features;
+    } else if (VK_IMAGE_TILING_OPTIMAL == tiling) {
+      supported_features = props.optimalTilingFeatures & features;
+    }
+
+    if (supported_features == features)
+      return fmts[i];
+  }
+
+  return VK_FORMAT_UNDEFINED;
 }
 
 //

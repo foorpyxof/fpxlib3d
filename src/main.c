@@ -25,14 +25,17 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
 
-#include "cglm/affine.h"
-#include "cglm/cam.h"
-#include "cglm/io.h"
-#include "cglm/mat4.h"
-#include "cglm/util.h"
-#include "cglm/vec3.h"
+#define GLM_FORCE_RADIANS
+#include "cglm/include/cglm/affine.h"
+#include "cglm/include/cglm/cam.h"
+#include "cglm/include/cglm/io.h"
+#include "cglm/include/cglm/mat4.h"
+#include "cglm/include/cglm/util.h"
+#include "cglm/include/cglm/vec3.h"
+
 #include <GLFW/glfw3.h>
 
+#include <assert.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -216,7 +219,7 @@ int gpu_suitability(Fpx3d_Vk_Context *ctx, VkPhysicalDevice to_score) {
 
   {
     Fpx3d_Vk_SwapchainProperties props =
-        fpx3d_vk_get_swapchain_support(ctx, to_score, sc_reqs);
+        fpx3d_vk_create_swapchain_properties(ctx, to_score, sc_reqs);
 
     if (!(props.surfaceFormatValid && props.presentModeValid)) {
       score = 0;
@@ -269,7 +272,7 @@ VkCommandBuffer *graphics_buffer = NULL;
 
 // ----- OTHER
 
-VkRenderPass *render_pass = NULL;
+Fpx3d_Vk_RenderPass *render_pass = NULL;
 
 void dest_callback(void *custom_ptr) {
   fprintf(stderr, "%s\n", (const char *)custom_ptr);
@@ -347,8 +350,6 @@ void vulkan_setup(void) {
   graphics_queue = fpx3d_vk_get_queue_at(lgpu, 0, GRAPHICS_QUEUE);
   present_queue = fpx3d_vk_get_queue_at(lgpu, 0, PRESENT_QUEUE);
 
-  FATAL_FAIL(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, sc_reqs));
-
   PRINT_FAILURE(fpx3d_vk_allocate_commandpools(lgpu, 2));
   PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 0, TRANSFER_POOL));
   PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 1, GRAPHICS_POOL));
@@ -358,8 +359,10 @@ void vulkan_setup(void) {
   PRINT_FAILURE(fpx3d_vk_allocate_commandbuffers_at_pool(lgpu, 0, 4));
   PRINT_FAILURE(fpx3d_vk_allocate_commandbuffers_at_pool(lgpu, 1, 4));
 
+  FATAL_FAIL(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, sc_reqs));
+
   FATAL_FAIL(fpx3d_vk_allocate_renderpasses(lgpu, 1));
-  FATAL_FAIL(fpx3d_vk_create_renderpass_at(lgpu, 0));
+  FATAL_FAIL(fpx3d_vk_create_renderpass_at(lgpu, 0, &vk_ctx));
   render_pass = fpx3d_vk_get_renderpass_at(lgpu, 0);
 
   FATAL_FAIL(fpx3d_vk_create_framebuffers(fpx3d_vk_get_current_swapchain(lgpu),
@@ -393,7 +396,7 @@ void load_textures(void) {
     dims.channels = STBI_rgb_alpha;
     dims.channelWidth = 1;
 
-    flopper = fpx3d_vk_create_image(&vk_ctx, lgpu, dims);
+    flopper = fpx3d_vk_create_texture_image(&vk_ctx, lgpu, dims);
     fpx3d_vk_fill_image(&flopper, &vk_ctx, lgpu, pixels);
     stbi_image_free(pixels);
     fpx3d_vk_image_readonly(&flopper, lgpu);
@@ -411,7 +414,7 @@ void load_textures(void) {
     dims.channels = STBI_rgb_alpha;
     dims.channelWidth = 1;
 
-    bingus = fpx3d_vk_create_image(&vk_ctx, lgpu, dims);
+    bingus = fpx3d_vk_create_texture_image(&vk_ctx, lgpu, dims);
     fpx3d_vk_fill_image(&bingus, &vk_ctx, lgpu, pixels);
     stbi_image_free(pixels);
     fpx3d_vk_image_readonly(&bingus, lgpu);

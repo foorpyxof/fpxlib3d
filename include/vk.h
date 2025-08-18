@@ -14,6 +14,7 @@
 #include "fpx3d.h"
 #include "window.h"
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "cglm/include/cglm/types.h"
 
 #define TRUE 1
@@ -79,13 +80,94 @@ Fpx3d_E_Result fpx3d_vk_destroy_logicalgpu_at(Fpx3d_Vk_Context *, size_t index);
 
 // RENDER PASSES ---------------------------------------------------------------
 
+typedef struct _fpx3d_vk_render_pass Fpx3d_Vk_RenderPass;
+
+struct _fpx3d_vk_render_pass {
+  VkRenderPass handle;
+};
+
 Fpx3d_E_Result fpx3d_vk_allocate_renderpasses(Fpx3d_Vk_LogicalGpu *,
                                               size_t count);
 Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *,
-                                             size_t index);
-VkRenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *, size_t index);
+                                             size_t index, Fpx3d_Vk_Context *);
+Fpx3d_Vk_RenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *,
+                                                size_t index);
 Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *,
                                               size_t index);
+
+// IMAGE -----------------------------------------------------------------------
+
+typedef struct _fpx3d_vk_image_dimensions Fpx3d_Vk_ImageDimensions;
+typedef struct _fpx3d_vk_image Fpx3d_Vk_Image;
+typedef struct _fpx3d_vk_image_sampler Fpx3d_Vk_ImageSampler;
+typedef struct _fpx3d_vk_texture Fpx3d_Vk_Texture;
+
+struct _fpx3d_vk_image_dimensions {
+  uint32_t width;
+  uint32_t height;
+  uint32_t channels;
+  uint32_t channelWidth;
+};
+
+struct _fpx3d_vk_image_sampler {
+  VkSampler handle;
+
+  bool isValid;
+};
+
+struct _fpx3d_vk_image {
+  Fpx3d_Vk_ImageDimensions dimensions;
+  size_t (*sizeInBytes)(Fpx3d_Vk_Image *);
+
+  VkImage image;
+  VkDeviceMemory memory;
+
+  VkImageView imageView;
+
+  VkFormat imageFormat;
+
+  VkImageSubresourceRange subresourceRange;
+
+  VkImageLayout imageLayout;
+  bool isReadOnly;
+
+  bool isValid;
+};
+
+struct _fpx3d_vk_texture {
+  Fpx3d_Vk_Image *imageReference;
+  Fpx3d_Vk_ImageSampler *samplerReference;
+
+  bool isValid;
+};
+
+Fpx3d_Vk_Image fpx3d_vk_create_depth_image(Fpx3d_Vk_Context *,
+                                           Fpx3d_Vk_LogicalGpu *,
+                                           Fpx3d_Vk_ImageDimensions dimensions);
+
+Fpx3d_Vk_Image
+fpx3d_vk_create_texture_image(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *,
+                              Fpx3d_Vk_ImageDimensions dimensions);
+
+Fpx3d_E_Result fpx3d_vk_fill_image(Fpx3d_Vk_Image *, Fpx3d_Vk_Context *,
+                                   Fpx3d_Vk_LogicalGpu *, void *data);
+
+Fpx3d_E_Result fpx3d_vk_image_readonly(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+
+Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
+
+Fpx3d_Vk_ImageSampler fpx3d_vk_create_image_sampler(Fpx3d_Vk_Context *,
+                                                    Fpx3d_Vk_LogicalGpu *,
+                                                    bool bilinear_filter,
+                                                    bool anisotropic_filter);
+
+Fpx3d_E_Result fpx3d_vk_destroy_image_sampler(Fpx3d_Vk_ImageSampler *,
+                                              Fpx3d_Vk_LogicalGpu *);
+
+Fpx3d_Vk_Texture fpx3d_vk_create_texture(Fpx3d_Vk_Image *,
+                                         Fpx3d_Vk_ImageSampler *);
+
+size_t fpx3d_vk_get_image_size_bytes(Fpx3d_Vk_Image *);
 
 // SWAP CHAINS -----------------------------------------------------------------
 
@@ -132,11 +214,12 @@ struct _fpx3d_vk_sc {
 
   VkSemaphore acquireSemaphore;
 
-  VkRenderPass *renderPassReference;
+  Fpx3d_Vk_RenderPass *renderPassReference;
 
-  VkFormat imageFormat;
   Fpx3d_Vk_SwapchainFrame *frames;
   size_t frameCount;
+
+  Fpx3d_Vk_Image depthImage;
 
   Fpx3d_Vk_Swapchain *nextInList;
 };
@@ -149,8 +232,9 @@ fpx3d_vk_set_required_presentmodes(Fpx3d_Vk_SwapchainRequirements *,
                                    VkPresentModeKHR *modes, size_t count);
 
 Fpx3d_Vk_SwapchainProperties
-fpx3d_vk_get_swapchain_support(Fpx3d_Vk_Context *ctx, VkPhysicalDevice dev,
-                               Fpx3d_Vk_SwapchainRequirements reqs);
+fpx3d_vk_create_swapchain_properties(Fpx3d_Vk_Context *ctx,
+                                     VkPhysicalDevice dev,
+                                     Fpx3d_Vk_SwapchainRequirements reqs);
 
 Fpx3d_E_Result fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *,
                                          Fpx3d_Vk_LogicalGpu *,
@@ -170,7 +254,7 @@ Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *,
 // TODO: also create() and destroy()? only if necessary tho
 Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *,
                                             Fpx3d_Vk_LogicalGpu *,
-                                            VkRenderPass *render_pass);
+                                            Fpx3d_Vk_RenderPass *render_pass);
 
 // QUEUES ----------------------------------------------------------------------
 
@@ -300,75 +384,6 @@ struct _fpx3d_vk_buffer {
 
   bool isValid;
 };
-
-// IMAGE -----------------------------------------------------------------------
-
-typedef struct _fpx3d_vk_image_dimensions Fpx3d_Vk_ImageDimensions;
-typedef struct _fpx3d_vk_image Fpx3d_Vk_Image;
-typedef struct _fpx3d_vk_image_sampler Fpx3d_Vk_ImageSampler;
-typedef struct _fpx3d_vk_texture Fpx3d_Vk_Texture;
-
-struct _fpx3d_vk_image_dimensions {
-  uint32_t width;
-  uint32_t height;
-  uint32_t channels;
-  uint32_t channelWidth;
-};
-
-struct _fpx3d_vk_image_sampler {
-  VkSampler handle;
-
-  bool isValid;
-};
-
-struct _fpx3d_vk_image {
-  Fpx3d_Vk_ImageDimensions dimensions;
-  size_t (*sizeInBytes)(Fpx3d_Vk_Image *);
-
-  VkImage image;
-  VkDeviceMemory memory;
-
-  VkImageView imageView;
-
-  VkFormat imageFormat;
-
-  VkImageSubresourceRange subresourceRange;
-
-  VkImageLayout imageLayout;
-  bool isReadOnly;
-
-  bool isValid;
-};
-
-struct _fpx3d_vk_texture {
-  Fpx3d_Vk_Image *imageReference;
-  Fpx3d_Vk_ImageSampler *samplerReference;
-
-  bool isValid;
-};
-
-Fpx3d_Vk_Image fpx3d_vk_create_image(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *,
-                                     Fpx3d_Vk_ImageDimensions dimensions);
-
-Fpx3d_E_Result fpx3d_vk_fill_image(Fpx3d_Vk_Image *, Fpx3d_Vk_Context *,
-                                   Fpx3d_Vk_LogicalGpu *, void *data);
-
-Fpx3d_E_Result fpx3d_vk_image_readonly(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
-
-Fpx3d_E_Result fpx3d_vk_destroy_image(Fpx3d_Vk_Image *, Fpx3d_Vk_LogicalGpu *);
-
-Fpx3d_Vk_ImageSampler fpx3d_vk_create_image_sampler(Fpx3d_Vk_Context *,
-                                                    Fpx3d_Vk_LogicalGpu *,
-                                                    bool bilinear_filter,
-                                                    bool anisotropic_filter);
-
-Fpx3d_E_Result fpx3d_vk_destroy_image_sampler(Fpx3d_Vk_ImageSampler *,
-                                              Fpx3d_Vk_LogicalGpu *);
-
-Fpx3d_Vk_Texture fpx3d_vk_create_texture(Fpx3d_Vk_Image *,
-                                         Fpx3d_Vk_ImageSampler *);
-
-size_t fpx3d_vk_get_image_size_bytes(Fpx3d_Vk_Image *);
 
 // DESCRIPTORS -----------------------------------------------------------------
 
@@ -591,7 +606,7 @@ struct _fpx3d_vk_pipeline {
       Fpx3d_Vk_Shape **shapes;
       size_t shapeCount;
 
-      VkRenderPass *renderPassReference;
+      Fpx3d_Vk_RenderPass *renderPassReference;
     } graphics;
   };
 
@@ -619,7 +634,7 @@ Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *,
 
 Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
     Fpx3d_Vk_LogicalGpu *, size_t index, Fpx3d_Vk_PipelineLayout *p_layout,
-    VkRenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
+    Fpx3d_Vk_RenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
     Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count);
 Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(Fpx3d_Vk_LogicalGpu *,
                                             size_t index);
@@ -738,7 +753,7 @@ struct _fpx3d_vk_lgpu {
   Fpx3d_Vk_Pipeline *pipelines;
   size_t pipelineCapacity;
 
-  VkRenderPass *renderPasses;
+  Fpx3d_Vk_RenderPass *renderPasses;
   size_t renderPassCapacity;
 
   struct fpx3d_vulkan_queues graphicsQueues;

@@ -1,5 +1,4 @@
-RELEASE_FLAGS := -O3
-
+RELEASE_FLAGS := -DNDEBUG -O3
 DEBUG_FLAGS := -DDEBUG -g -O0
 
 # DEBUG_FLAGS += -fsanitize=address
