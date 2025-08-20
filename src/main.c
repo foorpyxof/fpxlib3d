@@ -3,9 +3,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifdef DEBUG
-#define FPX3D_DEBUG_ENABLE
-#endif
 #include "debug.h"
 
 #include "fpx3d.h"
@@ -35,6 +32,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include "volk/volk.h"
 #include <assert.h>
 #include <signal.h>
 #include <stddef.h>
@@ -45,8 +43,6 @@
 #include <unistd.h>
 
 #define LOGICAL_GPU_COUNT 1
-
-#define ARRAY_SIZE(array) (sizeof(array) / sizeof(*array))
 
 // clang-format off
 #define PRINT_FAILURE(res) if (FPX3D_SUCCESS != res) { FPX3D_ERROR("A FUNCTION FAILED!"); }

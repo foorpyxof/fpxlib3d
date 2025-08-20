@@ -59,12 +59,7 @@ typedef enum {
   FPX3D_VK_EMPTY_DESCRIPTOR_BINDING = -20036,
 } Fpx3d_E_Result;
 
-#define FPX3D_ONFAIL(result, result_storage, code)                             \
-  {                                                                            \
-    Fpx3d_E_Result result_storage = result;                                    \
-    if (FPX3D_SUCCESS != result_storage) {                                     \
-      code                                                                     \
-    }                                                                          \
-  }
+#include "macros.h"
+#include <stdbool.h>
 
 #endif // FPX_3D_H

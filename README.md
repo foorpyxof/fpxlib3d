@@ -29,7 +29,7 @@ git submodule update --init --recursive
 ```
 
 #### 2.1.2. Makefile targets <a name="build_make_targets"></a>
-Within the root directory of the source tree, run `make` to compile the object files of the library. Run `make test` to also compile and link `src/main.c` for testing.
+Within the root directory of the source tree, run `make -j$(nproc)` to compile the object files of the library. Run `make test -j$(nproc)` to also compile and link `src/main.c` for testing.
 
 ! Make sure to run `make clean` before switching build targets (Windows, Linux) !
 

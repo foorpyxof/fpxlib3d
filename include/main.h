@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Erynn Scholtes
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef FPX_MAIN_H
 #define FPX_MAIN_H
 

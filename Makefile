@@ -1,10 +1,15 @@
 .PHONY: all prep release debug libs test clean shaders
 
+all: libs shaders
+
 # NOTE: remember to `make clean` after switching target OS
 # WINDOWS := true
 
 CC != which clang 2>/dev/null
+AR != which ar
+
 CC_WIN32 := x86_64-w64-mingw32-gcc
+AR_WIN32 := x86_64-w64-mingw32-ar
 
 include make/early.mak
 
@@ -26,6 +31,7 @@ ifeq ($(TARGET),$(WINDOWS_TARGET_NAME))
 	-include make/windows/*.mk
 
 	CC := $(CC_WIN32)
+	AR := $(AR_WIN32)
 	CFLAGS += -mwindows -DVK_USE_PLATFORM_WIN32_KHR
 	LDFLAGS += -lglfw3
 
@@ -53,9 +59,14 @@ EXE_EXT := $(TARGET)$(EXE_EXT)
 include make/variables.mak
 include make/dll.mak
 
-LIB_OBJECTS := vk
+VK_COMPONENTS := $(patsubst $(SOURCE_FOLDER)/%.c,%,$(wildcard $(SOURCE_FOLDER)/vk/*.c))
 
-all: libs shaders
+COMPONENTS := $(VK_COMPONENTS) general
+
+OBJECTS_FOLDER = $(BUILD_FOLDER)/objects
+
+OBJECTS_RELEASE = $(patsubst %,$(OBJECTS_FOLDER)/%$(OBJ_EXT),$(COMPONENTS))
+OBJECTS_DEBUG = $(patsubst %,$(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT),$(COMPONENTS))
 
 clean:
 	rm -rf ./$(BUILD_FOLDER) || true
@@ -74,10 +85,14 @@ libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
 $(OBJECTS_FOLDER):
 	mkdir -p $@
 
-$(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%$(OBJ_EXT): $(SOURCE_FOLDER)/%.c | $(OBJECTS_FOLDER)
+MKDIR_COMMAND = if ! [ -d "$(dir $@)" ]; then mkdir -p $(dir $@); fi
+
+$(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%$(OBJ_EXT): $(SOURCE_FOLDER)/%.c
+	$(MKDIR_COMMAND)
 	$(CC) $(CFLAGS) $(RELEASE_FLAGS) -c $< -o $@
 
-$(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)/%.c | $(OBJECTS_FOLDER)
+$(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)/%.c
+	$(MKDIR_COMMAND)
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) -c $< -o $@
 
 $(RELEASE_APP): LDFLAGS += -s

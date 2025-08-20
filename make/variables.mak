@@ -1,5 +1,5 @@
 RELEASE_FLAGS := -DNDEBUG -O3
-DEBUG_FLAGS := -DDEBUG -g -O0
+DEBUG_FLAGS := -DDEBUG -g -O0 -DFPX_VK_USE_VALIDATION_LAYERS -DFPX3D_DEBUG_ENABLE
 
 # DEBUG_FLAGS += -fsanitize=address
 # ^^^ uncomment for ASAN
@@ -20,8 +20,10 @@ LIB_DIRS := $(EXTRA_LIB_DIRS)
 
 # comp/link flags
 CFLAGS += $(foreach dir,$(INCLUDE_DIRS),-I$(dir))
-LDFLAGS += $(foreach dir,$(LIB_DIRS),-L$(dir))
 
+CFLAGS += -DVK_NO_PROTOTYPES
+
+LDFLAGS += $(foreach dir,$(LIB_DIRS),-L$(dir))
 
 # some file name definitions, for targets
 RELEASE_APP := $(BUILD_FOLDER)/release-$(EXE_EXT)
