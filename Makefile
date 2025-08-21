@@ -16,6 +16,7 @@ include make/early.mak
 WINDOWS_TARGET_NAME := win64
 LINUX_TARGET_NAME := linux
 
+LIB_PREFIX := libfpx3d_
 DEBUG_SUFFIX := _debug
 
 ifeq ($(WINDOWS),true)
@@ -40,6 +41,7 @@ ifeq ($(TARGET),$(WINDOWS_TARGET_NAME))
 	
 	EXE_EXT := .exe
 	OBJ_EXT := .obj
+	LIB_EXT := .lib
 
 else
 
@@ -51,6 +53,7 @@ endif
 	
 	# EXE_EXT := .out
 	OBJ_EXT := .o
+	LIB_EXT := .a
 
 endif
 
@@ -59,28 +62,31 @@ EXE_EXT := $(TARGET)$(EXE_EXT)
 include make/variables.mak
 include make/dll.mak
 
-VK_COMPONENTS := $(patsubst $(SOURCE_FOLDER)/%.c,%,$(wildcard $(SOURCE_FOLDER)/vk/*.c))
+LIBRARY_NAMES := vk general
 
-COMPONENTS := $(VK_COMPONENTS) general
+OBJECTS_FOLDER := $(BUILD_FOLDER)/objects
+LIBRARY_FOLDER := $(BUILD_FOLDER)/lib
 
-OBJECTS_FOLDER = $(BUILD_FOLDER)/objects
+COMPONENTS := $(foreach lib,$(LIBRARY_NAMES),$(patsubst $(SOURCE_FOLDER)/%.c,%,$(wildcard $(SOURCE_FOLDER)/$(lib)/*.c)))
 
-OBJECTS_RELEASE = $(patsubst %,$(OBJECTS_FOLDER)/%$(OBJ_EXT),$(COMPONENTS))
-OBJECTS_DEBUG = $(patsubst %,$(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT),$(COMPONENTS))
+OBJECTS_RELEASE := $(foreach c,$(COMPONENTS),$(OBJECTS_FOLDER)/$c$(OBJ_EXT))
+OBJECTS_DEBUG := $(patsubst %$(OBJ_EXT),%$(DEBUG_SUFFIX)$(OBJ_EXT),$(OBJECTS_RELEASE))
+
+include make/library.mak
 
 clean:
 	rm -rf ./$(BUILD_FOLDER) || true
 
 shaders: $(SHADER_FILES)
 
-release: $(OBJECTS_RELEASE)
-debug: $(OBJECTS_DEBUG)
+release: $(LIBS_RELEASE)
+debug: $(LIBS_DEBUG)
 
 # testing app
 test: $(RELEASE_APP) $(DEBUG_APP) $(SHADER_FILES)
 
 # individual libraries, both RELEASE and DEBUG
-libs: $(OBJECTS_RELEASE) $(OBJECTS_DEBUG)
+libs: $(LIBS_RELEASE) $(LIBS_DEBUG)
 
 $(OBJECTS_FOLDER):
 	mkdir -p $@
@@ -96,16 +102,20 @@ $(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) -c $< -o $@
 
 $(RELEASE_APP): LDFLAGS += -s
-$(RELEASE_APP): $(OBJECTS_RELEASE) $(MAIN_C)
+$(RELEASE_APP): $(MAIN_C) $(LIBS_RELEASE)
 	@echo target: $(TARGET)
-	if [[ "$(WINDOWS)" == "true" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(RELEASE_FLAGS) $^ -o $@
+	if [[ "$(TARGET)" == "$(WINDOWS_TARGET_NAME)" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
+	$(CC) $(CFLAGS) $< \
+	-L$(LIBRARY_FOLDER) $(foreach lib,$(LIBS_RELEASE),-l$(patsubst lib%$(LIB_EXT),%,$(notdir $(lib)))) $(LDFLAGS) \
+	$(EXTRA_FLAGS) $(RELEASE_FLAGS) -o $@
 
-$(DEBUG_APP): $(OBJECTS_DEBUG) $(MAIN_C)
+$(DEBUG_APP): $(MAIN_C) $(LIBS_DEBUG)
 	if [[ "$(WINDOWS)" == "true" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
-	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_FLAGS) $(DEBUG_FLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $< \
+	-L$(LIBRARY_FOLDER) $(foreach lib,$(LIBS_DEBUG),-l$(patsubst lib%$(LIB_EXT),%,$(notdir $(lib)))) $(LDFLAGS) \
+	$(EXTRA_FLAGS) $(DEBUG_FLAGS) -o $@
 
 $(SHADER_FILES): %.spv: %
 	glslc $< -o $@
 
-include make/archive.mak
+include make/zip.mak
