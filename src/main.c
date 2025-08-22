@@ -358,11 +358,11 @@ void vulkan_setup(void) {
   FATAL_FAIL(fpx3d_vk_create_swapchain(&vk_ctx, lgpu, sc_reqs));
 
   FATAL_FAIL(fpx3d_vk_allocate_renderpasses(lgpu, 1));
-  FATAL_FAIL(fpx3d_vk_create_renderpass_at(lgpu, 0, &vk_ctx));
+  FATAL_FAIL(fpx3d_vk_create_renderpass_at(lgpu, 0, true, &vk_ctx));
   render_pass = fpx3d_vk_get_renderpass_at(lgpu, 0);
 
   FATAL_FAIL(fpx3d_vk_create_framebuffers(fpx3d_vk_get_current_swapchain(lgpu),
-                                          lgpu, render_pass));
+                                          &vk_ctx, lgpu, render_pass));
 }
 
 Fpx3d_Vk_SpirvFile shaders[] = {{0}, {0}};

@@ -5,12 +5,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <vulkan/vulkan_core.h>
 
 #include "debug.h"
 #include "fpx3d.h"
+#include "macros.h"
 #include "vk/context.h"
+#include "vk/image.h"
 #include "vk/logical_gpu.h"
 #include "vk/renderpass.h"
+#include "vk/typedefs.h"
 #include "vk/utility.h"
 #include "volk/volk.h"
 
@@ -355,7 +359,7 @@ Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *ctx,
                                                .height = h_w.height};
 
   fpx3d_vk_create_depth_image(ctx, lgpu, depth_dimensions);
-  fpx3d_vk_create_framebuffers(new_chain, lgpu, old_pass);
+  fpx3d_vk_create_framebuffers(new_chain, ctx, lgpu, old_pass);
 
   return FPX3D_SUCCESS;
 }
@@ -426,6 +430,7 @@ Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *sc,
 }
 
 Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
+                                            Fpx3d_Vk_Context *ctx,
                                             Fpx3d_Vk_LogicalGpu *lgpu,
                                             Fpx3d_Vk_RenderPass *render_pass) {
   NULL_CHECK(sc, FPX3D_ARGS_ERROR);
@@ -435,14 +440,31 @@ Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
 
   NULL_CHECK(sc->frames, FPX3D_VK_NULLPTR_ERROR);
 
+  VkImageView attachments[2] = {0};
+
+  if (render_pass->depth) {
+    Fpx3d_Vk_ImageDimensions dims = {.height = sc->swapchainExtent.height,
+                                     .width = sc->swapchainExtent.width};
+
+    sc->depthImage = fpx3d_vk_create_depth_image(ctx, lgpu, dims);
+
+    if (false == sc->depthImage.isValid) {
+      return FPX3D_VK_ERROR;
+    }
+
+    attachments[1] = sc->depthImage.imageView;
+  }
+
   for (size_t i = 0; i < sc->frameCount; ++i) {
     VkFramebuffer new_fb = VK_NULL_HANDLE;
+
+    attachments[0] = sc->frames[i].view;
 
     VkFramebufferCreateInfo fb_info = {0};
     fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fb_info.renderPass = render_pass->handle;
-    fb_info.attachmentCount = 1;
-    fb_info.pAttachments = &sc->frames[i].view;
+    fb_info.attachmentCount = CONDITIONAL(render_pass->depth, 2, 1);
+    fb_info.pAttachments = attachments;
     fb_info.width = sc->swapchainExtent.width;
     fb_info.height = sc->swapchainExtent.height;
     fb_info.layers = 1;
@@ -630,6 +652,8 @@ Fpx3d_E_Result __fpx3d_vk_destroy_swapchain(Fpx3d_Vk_LogicalGpu *lgpu,
       vkDestroySemaphore(lgpu->handle, sc->frames[i].renderFinished, NULL);
   }
   FREE_SAFE(sc->frames);
+
+  fpx3d_vk_destroy_image(&sc->depthImage, lgpu);
 
   vkDestroySemaphore(lgpu->handle, sc->acquireSemaphore, NULL);
 

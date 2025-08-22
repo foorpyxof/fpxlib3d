@@ -58,8 +58,6 @@ static VkFormat _fpx3d_vk_texture_formats_table[][5] = {
   ((ARRAY_SIZE(_fpx3d_vk_texture_formats_table) *                              \
     ARRAY_SIZE(_fpx3d_vk_texture_formats_table[0])) < (idx))
 
-static VkFormat _supported_format(VkFormat *fmts, size_t count, VkImageTiling,
-                                  VkFormatFeatureFlags, VkPhysicalDevice);
 static Fpx3d_E_Result _new_image_sampler(Fpx3d_Vk_Context *,
                                          Fpx3d_Vk_LogicalGpu *,
                                          VkSamplerAddressMode addr_mode,
@@ -86,6 +84,10 @@ static Fpx3d_E_Result _vk_buf_to_image(VkBuffer, Fpx3d_Vk_Image *,
                                        VkQueue graphics_queue, VkDevice lgpu);
 // end of static declarations ----------------------------
 
+VkFormat __fpx3d_vk_supported_format(VkFormat *fmts, size_t count,
+                                     VkImageTiling, VkFormatFeatureFlags,
+                                     VkPhysicalDevice);
+
 Fpx3d_E_Result __fpx3d_vk_new_image(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
                                     Fpx3d_Vk_ImageDimensions dimensions,
                                     VkFormat fmt, VkImageTiling tiling,
@@ -96,6 +98,29 @@ Fpx3d_E_Result __fpx3d_vk_new_image(VkPhysicalDevice, Fpx3d_Vk_LogicalGpu *,
 Fpx3d_E_Result __fpx3d_vk_new_image_view(Fpx3d_Vk_Image *,
                                          Fpx3d_Vk_LogicalGpu *,
                                          VkImageView *output);
+
+VkFormat __fpx3d_vk_supported_format(VkFormat *fmts, size_t count,
+                                     VkImageTiling tiling,
+                                     VkFormatFeatureFlags features,
+                                     VkPhysicalDevice dev) {
+  for (size_t i = 0; i < count; ++i) {
+    VkFormatProperties props = {0};
+    vkGetPhysicalDeviceFormatProperties(dev, fmts[i], &props);
+
+    VkFormatFeatureFlags supported_features = {0};
+
+    if (VK_IMAGE_TILING_LINEAR == tiling) {
+      supported_features = props.linearTilingFeatures & features;
+    } else if (VK_IMAGE_TILING_OPTIMAL == tiling) {
+      supported_features = props.optimalTilingFeatures & features;
+    }
+
+    if (supported_features == features)
+      return fmts[i];
+  }
+
+  return VK_FORMAT_UNDEFINED;
+}
 
 Fpx3d_E_Result
 __fpx3d_vk_new_image(VkPhysicalDevice dev, Fpx3d_Vk_LogicalGpu *lgpu,
@@ -243,7 +268,7 @@ fpx3d_vk_create_depth_image(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
 
   VkFormat choices[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
                         VK_FORMAT_D24_UNORM_S8_UINT};
-  VkFormat depth_format = _supported_format(
+  VkFormat depth_format = __fpx3d_vk_supported_format(
       choices, ARRAY_SIZE(choices), VK_IMAGE_TILING_OPTIMAL,
       VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, ctx->physicalGpu);
 
@@ -437,29 +462,6 @@ size_t fpx3d_vk_get_image_size_bytes(Fpx3d_Vk_Image *image) {
 }
 
 // STATIC FUNCTIONS -------------------------------------------
-static VkFormat _supported_format(VkFormat *fmts, size_t count,
-                                  VkImageTiling tiling,
-                                  VkFormatFeatureFlags features,
-                                  VkPhysicalDevice dev) {
-  for (size_t i = 0; i < count; ++i) {
-    VkFormatProperties props = {0};
-    vkGetPhysicalDeviceFormatProperties(dev, fmts[i], &props);
-
-    VkFormatFeatureFlags supported_features = {0};
-
-    if (VK_IMAGE_TILING_LINEAR == tiling) {
-      supported_features = props.linearTilingFeatures & features;
-    } else if (VK_IMAGE_TILING_OPTIMAL == tiling) {
-      supported_features = props.optimalTilingFeatures & features;
-    }
-
-    if (supported_features == features)
-      return fmts[i];
-  }
-
-  return VK_FORMAT_UNDEFINED;
-}
-
 static Fpx3d_E_Result _new_image_sampler(Fpx3d_Vk_Context *ctx,
                                          Fpx3d_Vk_LogicalGpu *lgpu,
                                          VkSamplerAddressMode addr_mode,

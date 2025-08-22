@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <vulkan/vulkan_core.h>
 
 #include "vk/context.h"
 #include "vk/descriptors.h"
@@ -318,6 +319,16 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
       .blendConstants = {0.0f},
   };
 
+  VkPipelineDepthStencilStateCreateInfo ds_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+      .depthTestEnable = VK_TRUE,
+      .depthWriteEnable = VK_TRUE,
+      .depthCompareOp = VK_COMPARE_OP_LESS,
+      .depthBoundsTestEnable = VK_FALSE,
+      .minDepthBounds = 0.0f,
+      .maxDepthBounds = 0.0f,
+      .stencilTestEnable = VK_FALSE};
+
   VkGraphicsPipelineCreateInfo p_info = {0};
   VkPipeline new_pipeline;
 
@@ -332,7 +343,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
     p_info.pViewportState = &vs_info;
     p_info.pRasterizationState = &rs_info;
     p_info.pMultisampleState = &ms_info;
-    p_info.pDepthStencilState = NULL;
+    p_info.pDepthStencilState = &ds_info;
     p_info.pColorBlendState = &cb_info;
     p_info.pDynamicState = &d_info;
 

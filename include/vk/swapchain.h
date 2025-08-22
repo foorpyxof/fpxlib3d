@@ -91,6 +91,7 @@ Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *,
 
 // TODO: also create() and destroy()? only if necessary tho
 Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *,
+                                            Fpx3d_Vk_Context *,
                                             Fpx3d_Vk_LogicalGpu *,
                                             Fpx3d_Vk_RenderPass *render_pass);
 

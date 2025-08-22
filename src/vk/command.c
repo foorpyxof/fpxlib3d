@@ -5,9 +5,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <vulkan/vulkan_core.h>
 
 #include "debug.h"
 #include "fpx3d.h"
+#include "macros.h"
 #include "vk/context.h"
 #include "vk/descriptors.h"
 #include "vk/logical_gpu.h"
@@ -283,9 +285,10 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
   r_info.renderArea.offset.x = 0;
   r_info.renderArea.offset.y = 0;
 
-  VkClearValue clear = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-  r_info.clearValueCount = 1;
-  r_info.pClearValues = &clear;
+  VkClearValue clears[2] = {{{{0.0f, 0.0f, 0.0f, 0.0f}}}, {{{1.0f, 0}}}};
+  r_info.clearValueCount =
+      CONDITIONAL(swapchain->renderPassReference->depth, 2, 1);
+  r_info.pClearValues = clears;
 
   vkCmdBeginRenderPass(*buffer, &r_info, VK_SUBPASS_CONTENTS_INLINE);
 

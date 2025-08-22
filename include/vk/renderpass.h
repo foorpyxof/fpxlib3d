@@ -12,12 +12,15 @@
 
 struct _fpx3d_vk_render_pass {
   VkRenderPass handle;
+
+  bool depth;
 };
 
 Fpx3d_E_Result fpx3d_vk_allocate_renderpasses(Fpx3d_Vk_LogicalGpu *,
                                               size_t count);
 Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *,
-                                             size_t index, Fpx3d_Vk_Context *);
+                                             size_t index, bool depth_buffer,
+                                             Fpx3d_Vk_Context *);
 Fpx3d_Vk_RenderPass *fpx3d_vk_get_renderpass_at(Fpx3d_Vk_LogicalGpu *,
                                                 size_t index);
 Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *,
