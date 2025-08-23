@@ -16,7 +16,8 @@ include make/early.mak
 WINDOWS_TARGET_NAME := win64
 LINUX_TARGET_NAME := linux
 
-LIB_PREFIX := libfpx3d_
+PREFIX := fpx3d_
+LIB_PREFIX := lib$(PREFIX)
 DEBUG_SUFFIX := _debug
 
 ifeq ($(WINDOWS),true)
@@ -67,7 +68,7 @@ LIBRARY_NAMES := vk general
 OBJECTS_FOLDER := $(BUILD_FOLDER)/objects
 LIBRARY_FOLDER := $(BUILD_FOLDER)/lib
 
-COMPONENTS := $(foreach lib,$(LIBRARY_NAMES),$(patsubst $(SOURCE_FOLDER)/%.c,%,$(wildcard $(SOURCE_FOLDER)/$(lib)/*.c)))
+COMPONENTS := $(foreach lib,$(LIBRARY_NAMES),$(patsubst $(SOURCE_FOLDER)/$(lib)/%.c,$(lib)/$(PREFIX)$(lib)_%,$(wildcard $(SOURCE_FOLDER)/$(lib)/*.c)))
 
 OBJECTS_RELEASE := $(foreach c,$(COMPONENTS),$(OBJECTS_FOLDER)/$c$(OBJ_EXT))
 OBJECTS_DEBUG := $(patsubst %$(OBJ_EXT),%$(DEBUG_SUFFIX)$(OBJ_EXT),$(OBJECTS_RELEASE))
@@ -93,13 +94,18 @@ $(OBJECTS_FOLDER):
 
 MKDIR_COMMAND = if ! [ -d "$(dir $@)" ]; then mkdir -p $(dir $@); fi
 
-$(OBJECTS_RELEASE): $(OBJECTS_FOLDER)/%$(OBJ_EXT): $(SOURCE_FOLDER)/%.c
-	$(MKDIR_COMMAND)
-	$(CC) $(CFLAGS) $(RELEASE_FLAGS) -c $< -o $@
+# $(1) is lib
+define new-obj-target
+$(filter $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%,$(OBJECTS_RELEASE)): $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%$(OBJ_EXT): $(SOURCE_FOLDER)/$(1)/%.c
+	$$(MKDIR_COMMAND)
+	$(CC) $(CFLAGS) $(RELEASE_FLAGS) -c $$< -o $$@
 
-$(OBJECTS_DEBUG): $(OBJECTS_FOLDER)/%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)/%.c
-	$(MKDIR_COMMAND)
-	$(CC) $(CFLAGS) $(DEBUG_FLAGS) -c $< -o $@
+$(filter $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%,$(OBJECTS_DEBUG)): $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)/$(1)/%.c
+	$$(MKDIR_COMMAND)
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) -c $$< -o $$@
+endef
+
+$(foreach lib,$(LIBRARY_NAMES),$(eval $(call new-obj-target,$(lib))))
 
 $(RELEASE_APP): LDFLAGS += -s
 $(RELEASE_APP): $(MAIN_C) $(LIBS_RELEASE)
