@@ -63,16 +63,6 @@ EXE_EXT := $(TARGET)$(EXE_EXT)
 include make/variables.mak
 include make/dll.mak
 
-LIBRARY_NAMES := vk general
-
-OBJECTS_FOLDER := $(BUILD_FOLDER)/objects
-LIBRARY_FOLDER := $(BUILD_FOLDER)/lib
-
-COMPONENTS := $(foreach lib,$(LIBRARY_NAMES),$(patsubst $(SOURCE_FOLDER)/$(lib)/%.c,$(lib)/$(PREFIX)$(lib)_%,$(wildcard $(SOURCE_FOLDER)/$(lib)/*.c)))
-
-OBJECTS_RELEASE := $(foreach c,$(COMPONENTS),$(OBJECTS_FOLDER)/$c$(OBJ_EXT))
-OBJECTS_DEBUG := $(patsubst %$(OBJ_EXT),%$(DEBUG_SUFFIX)$(OBJ_EXT),$(OBJECTS_RELEASE))
-
 include make/library.mak
 
 clean:
@@ -97,28 +87,29 @@ MKDIR_COMMAND = if ! [ -d "$(dir $@)" ]; then mkdir -p $(dir $@); fi
 # $(1) is lib
 define new-obj-target
 $(filter $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%,$(OBJECTS_RELEASE)): $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%$(OBJ_EXT): $(SOURCE_FOLDER)/$(1)/%.c
-	$$(MKDIR_COMMAND)
+	@$$(MKDIR_COMMAND)
 	$(CC) $(CFLAGS) $(RELEASE_FLAGS) -c $$< -o $$@
 
 $(filter $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%,$(OBJECTS_DEBUG)): $(OBJECTS_FOLDER)/$(1)/$(PREFIX)$(1)_%$(DEBUG_SUFFIX)$(OBJ_EXT): $(SOURCE_FOLDER)/$(1)/%.c
-	$$(MKDIR_COMMAND)
+	@$$(MKDIR_COMMAND)
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) -c $$< -o $$@
 endef
 
 $(foreach lib,$(LIBRARY_NAMES),$(eval $(call new-obj-target,$(lib))))
 
-$(RELEASE_APP): LDFLAGS += -s
+# $(RELEASE_APP): LDFLAGS += -s
 $(RELEASE_APP): $(MAIN_C) $(LIBS_RELEASE)
 	@echo target: $(TARGET)
 	if [[ "$(TARGET)" == "$(WINDOWS_TARGET_NAME)" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
 	$(CC) $(CFLAGS) $< \
-	-L$(LIBRARY_FOLDER) $(foreach lib,$(LIBS_RELEASE),-l$(patsubst lib%$(LIB_EXT),%,$(notdir $(lib)))) $(LDFLAGS) \
+	-L$(LIBRARY_FOLDER) $(foreach lib,$(filter-out $<,$^),-l$(patsubst lib%$(LIB_EXT),%,$(notdir $(lib)))) $(LDFLAGS) \
 	$(EXTRA_FLAGS) $(RELEASE_FLAGS) -o $@
 
 $(DEBUG_APP): $(MAIN_C) $(LIBS_DEBUG)
-	if [[ "$(WINDOWS)" == "true" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
+	@echo target: $(TARGET)
+	if [[ "$(TARGET)" == "$(WINDOWS_TARGET_NAME)" ]]; then $(MAKE) $(REQUIRED_DLLS); fi
 	$(CC) $(CFLAGS) $< \
-	-L$(LIBRARY_FOLDER) $(foreach lib,$(LIBS_DEBUG),-l$(patsubst lib%$(LIB_EXT),%,$(notdir $(lib)))) $(LDFLAGS) \
+	-L$(LIBRARY_FOLDER) $(foreach lib,$(filter-out $<,$^),-l$(patsubst lib%$(LIB_EXT),%,$(notdir $(lib)))) $(LDFLAGS) \
 	$(EXTRA_FLAGS) $(DEBUG_FLAGS) -o $@
 
 $(SHADER_FILES): %.spv: %

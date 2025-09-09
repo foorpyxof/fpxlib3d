@@ -7,3 +7,6 @@
 [submodule "stb"]
 	path = modules/stb
 	url = https://github.com/nothings/stb.git
+[submodule "fpxlibc"]
+	path = modules/fpxlibc
+	url = https://git.goodgirl.dev/foorpyxof/fpxlibc.git

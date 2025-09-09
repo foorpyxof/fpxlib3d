@@ -9,17 +9,11 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "../model/model.h"
 #include "fpx3d.h"
-
-#include "vk/typedefs.h"
+#include "typedefs.h"
 
 #include "cglm/include/cglm/types.h"
-
-struct _fpx3d_vk_vertex {
-  vec3 position;
-  vec3 color;
-  vec2 textureCoordinate;
-};
 
 struct _fpx3d_vk_vertex_bundle {
   // size of the Vertex data in bytes (for a single vertex).
@@ -63,9 +57,6 @@ struct _fpx3d_vk_vertex_attr {
 
   size_t dataOffsetBytes;
 };
-
-Fpx3d_E_Result fpx3d_set_vertex_position(Fpx3d_Vk_Vertex *, vec3 pos);
-Fpx3d_E_Result fpx3d_set_vertex_color(Fpx3d_Vk_Vertex *, vec3 color);
 
 // will *only* zero-initialize if this is an initial allocation,
 // not when reallocating using this function

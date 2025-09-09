@@ -127,7 +127,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
   NULL_CHECK(render_pass->handle, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->pipelines, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->pipelines, FPX3D_NULLPTR_ERROR);
 
   if (0 == ((ptrdiff_t)shaders->vertex.handle |
             (ptrdiff_t)shaders->tesselationControl.handle |
@@ -395,7 +395,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->pipelines, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->pipelines, FPX3D_NULLPTR_ERROR);
 
   if (lgpu->pipelineCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;

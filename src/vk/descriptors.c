@@ -337,11 +337,11 @@ Fpx3d_E_Result fpx3d_vk_update_pipeline_descriptor(Fpx3d_Vk_Pipeline *pipeline,
   NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
   NULL_CHECK(value, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(pipeline->bindings.rawBufferData, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(pipeline->bindings.rawBufferData, FPX3D_NULLPTR_ERROR);
 
   Fpx3d_Vk_DescriptorSet *set_data = pipeline->bindings.inFlightDescriptorSets;
 
-  NULL_CHECK(set_data, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(set_data, FPX3D_NULLPTR_ERROR);
 
   if (set_data->bindingCount <= binding)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
@@ -427,11 +427,11 @@ Fpx3d_E_Result fpx3d_vk_update_shape_descriptor(Fpx3d_Vk_Shape *shape,
   NULL_CHECK(shape, FPX3D_ARGS_ERROR);
   NULL_CHECK(value, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(shape->bindings.rawBufferData, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(shape->bindings.rawBufferData, FPX3D_NULLPTR_ERROR);
 
   Fpx3d_Vk_DescriptorSet *set_data = shape->bindings.inFlightDescriptorSets;
 
-  NULL_CHECK(set_data, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(set_data, FPX3D_NULLPTR_ERROR);
 
   if (set_data->bindingCount <= binding)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
@@ -559,7 +559,7 @@ static Fpx3d_E_Result _create_descriptor_buffer_write_set(
   NULL_CHECK(ds, FPX3D_ARGS_ERROR);
   NULL_CHECK(buffer_offset, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(ds->bindings, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(ds->bindings, FPX3D_NULLPTR_ERROR);
   NULL_CHECK(ds->handle, FPX3D_VK_BAD_HANDLE_ERROR);
   NULL_CHECK(ds->buffer.buffer, FPX3D_VK_BAD_HANDLE_ERROR);
 
@@ -597,7 +597,7 @@ _create_descriptor_image_write_set(VkWriteDescriptorSet *w_sets,
   NULL_CHECK(w_sets, FPX3D_ARGS_ERROR);
   NULL_CHECK(ds, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(ds->bindings, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(ds->bindings, FPX3D_NULLPTR_ERROR);
   NULL_CHECK(ds->handle, FPX3D_VK_BAD_HANDLE_ERROR);
   NULL_CHECK(ds->buffer.buffer, FPX3D_VK_BAD_HANDLE_ERROR);
 
@@ -621,7 +621,7 @@ _create_descriptor_image_write_set(VkWriteDescriptorSet *w_sets,
     if (NULL == tex || NULL == tex->imageReference ||
         NULL == tex->samplerReference) {
       FREE_SAFE(i_infos);
-      return FPX3D_VK_NULLPTR_ERROR;
+      return FPX3D_NULLPTR_ERROR;
     }
 
     i->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

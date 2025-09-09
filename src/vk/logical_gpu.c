@@ -151,7 +151,7 @@ Fpx3d_E_Result fpx3d_vk_create_logicalgpu_at(Fpx3d_Vk_Context *ctx,
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
   NULL_CHECK(ctx->physicalGpu, FPX3D_VK_BAD_GPU_HANDLE_ERROR);
   NULL_CHECK(ctx->vkSurface, FPX3D_VK_BAD_VULKAN_INSTANCE_ERROR);
-  NULL_CHECK(ctx->logicalGpus, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(ctx->logicalGpus, FPX3D_NULLPTR_ERROR);
 
   if (ctx->logicalGpuCapacity <= index)
     return FPX3D_NO_CAPACITY_ERROR;
@@ -415,7 +415,7 @@ Fpx3d_Vk_LogicalGpu *fpx3d_vk_get_logicalgpu_at(Fpx3d_Vk_Context *ctx,
 Fpx3d_E_Result fpx3d_vk_destroy_logicalgpu_at(Fpx3d_Vk_Context *ctx,
                                               size_t index) {
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
-  NULL_CHECK(ctx->logicalGpus, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(ctx->logicalGpus, FPX3D_NULLPTR_ERROR);
 
   if (ctx->logicalGpuCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;

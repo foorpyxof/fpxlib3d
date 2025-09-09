@@ -61,7 +61,6 @@ typedef struct _fpx3d_vk_descriptor_set_layout Fpx3d_Vk_DescriptorSetLayout;
 typedef struct _fpx3d_vk_descriptor_set_binding Fpx3d_Vk_DescriptorSetBinding;
 typedef struct _fpx3d_vk_descriptor_set Fpx3d_Vk_DescriptorSet;
 
-typedef struct _fpx3d_vk_vertex Fpx3d_Vk_Vertex;
 typedef struct _fpx3d_vk_vertex_bundle Fpx3d_Vk_VertexBundle;
 typedef struct _fpx3d_vk_vertex_binding Fpx3d_Vk_VertexBinding;
 typedef struct _fpx3d_vk_vertex_attr Fpx3d_Vk_VertexAttribute;

@@ -128,7 +128,7 @@ Fpx3d_E_Result fpx3d_create_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->commandPools, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->commandPools, FPX3D_NULLPTR_ERROR);
 
   if (lgpu->commandPoolCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
@@ -175,7 +175,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->commandPools, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->commandPools, FPX3D_NULLPTR_ERROR);
 
   if (lgpu->commandPoolCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
@@ -191,7 +191,7 @@ fpx3d_vk_allocate_commandbuffers_at_pool(Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->commandPools, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->commandPools, FPX3D_NULLPTR_ERROR);
 
   if (lgpu->commandPoolCapacity <= cmd_pool_index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
@@ -247,7 +247,7 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
   NULL_CHECK(swapchain, FPX3D_ARGS_ERROR);
 
   NULL_CHECK(pipeline->handle, FPX3D_VK_PIPELINE_INVALID_ERROR);
-  NULL_CHECK(pipeline->graphics.renderPassReference, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(pipeline->graphics.renderPassReference, FPX3D_NULLPTR_ERROR);
   NULL_CHECK(swapchain->swapchain, FPX3D_VK_SWAPCHAIN_INVALID_ERROR);
 
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);

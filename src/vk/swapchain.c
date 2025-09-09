@@ -396,7 +396,7 @@ Fpx3d_E_Result fpx3d_vk_present_swapchain_frame_at(Fpx3d_Vk_Swapchain *sc,
   NULL_CHECK(sc, FPX3D_ARGS_ERROR);
   NULL_CHECK(present_queue, FPX3D_ARGS_ERROR);
 
-  NULL_CHECK(sc->frames, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(sc->frames, FPX3D_NULLPTR_ERROR);
   NULL_CHECK(sc->swapchain, FPX3D_VK_SWAPCHAIN_INVALID_ERROR);
 
   if (sc->frameCount <= index)
@@ -438,7 +438,7 @@ Fpx3d_E_Result fpx3d_vk_create_framebuffers(Fpx3d_Vk_Swapchain *sc,
   NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(sc->frames, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(sc->frames, FPX3D_NULLPTR_ERROR);
 
   VkImageView attachments[2] = {0};
 

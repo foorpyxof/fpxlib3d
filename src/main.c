@@ -6,7 +6,11 @@
 #include "debug.h"
 
 #include "fpx3d.h"
+#include "macros.h"
 #include "main.h"
+#include "model/gltf.h"
+#include "model/model.h"
+#include "model/typedefs.h"
 #include "vk.h"
 #include "window.h"
 
@@ -423,38 +427,38 @@ void load_textures(void) {
 
 Fpx3d_Vk_VertexAttribute vertex_attributes[] = {
     {.format = VEC3_32BIT_SFLOAT,
-     .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, position)},
+     .dataOffsetBytes = offsetof(Fpx3d_Model_Vertex, position)},
     {.format = VEC3_32BIT_SFLOAT,
-     .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, color)},
+     .dataOffsetBytes = offsetof(Fpx3d_Model_Vertex, color)},
     {.format = VEC2_32BIT_SFLOAT,
-     .dataOffsetBytes = offsetof(Fpx3d_Vk_Vertex, textureCoordinate)}};
+     .dataOffsetBytes = offsetof(Fpx3d_Model_Vertex, textureCoordinate)}};
 
 Fpx3d_Vk_VertexBinding vertex_binding = {0};
 void create_shapes(void) {
-  Fpx3d_Vk_Vertex triangle[] = {{.position = {0.0f, -0.5f, 0.0f},
-                                 .color = {1.0f, 0.0f, 0.0f},
-                                 .textureCoordinate = {0.5f, 0.0f}},
-                                {.position = {0.5f, 0.5f, 0.0f},
-                                 .color = {0.0f, 1.0f, 0.0f},
-                                 .textureCoordinate = {0.0f, 1.0f}},
-                                {.position = {-0.5f, 0.5f, 0.0f},
-                                 .color = {0.0f, 0.0f, 1.0f},
-                                 .textureCoordinate = {1.0f, 1.0f}}};
+  Fpx3d_Model_Vertex triangle[] = {{.position = {0.0f, -0.5f, 0.0f},
+                                    .color = {1.0f, 0.0f, 0.0f},
+                                    .textureCoordinate = {0.5f, 0.0f}},
+                                   {.position = {0.5f, 0.5f, 0.0f},
+                                    .color = {0.0f, 1.0f, 0.0f},
+                                    .textureCoordinate = {0.0f, 1.0f}},
+                                   {.position = {-0.5f, 0.5f, 0.0f},
+                                    .color = {0.0f, 0.0f, 1.0f},
+                                    .textureCoordinate = {1.0f, 1.0f}}};
 
-  Fpx3d_Vk_Vertex square[] = {{.position = {-0.25f, -0.25f, 0.0f},
-                               .color = {1.0f, 0.0f, 0.0f},
-                               .textureCoordinate = {1.0f, 0.0f}},
-                              {.position = {0.25f, -0.25f, 0.0f},
-                               .color = {0.0f, 1.0f, 0.0f},
-                               .textureCoordinate = {0.0f, 0.0f}},
-                              {.position = {0.25f, 0.25f, 0.0f},
-                               .color = {0.0f, 0.0f, 1.0f},
-                               .textureCoordinate = {0.0f, 1.0f}},
-                              {.position = {-0.25f, 0.25f, 0.0f},
-                               .color = {1.0f, 1.0f, 1.0f},
-                               .textureCoordinate = {1.0f, 1.0f}}};
+  Fpx3d_Model_Vertex square[] = {{.position = {-0.25f, -0.25f, 0.0f},
+                                  .color = {1.0f, 0.0f, 0.0f},
+                                  .textureCoordinate = {1.0f, 0.0f}},
+                                 {.position = {0.25f, -0.25f, 0.0f},
+                                  .color = {0.0f, 1.0f, 0.0f},
+                                  .textureCoordinate = {0.0f, 0.0f}},
+                                 {.position = {0.25f, 0.25f, 0.0f},
+                                  .color = {0.0f, 0.0f, 1.0f},
+                                  .textureCoordinate = {0.0f, 1.0f}},
+                                 {.position = {-0.25f, 0.25f, 0.0f},
+                                  .color = {1.0f, 1.0f, 1.0f},
+                                  .textureCoordinate = {1.0f, 1.0f}}};
 
-  Fpx3d_Vk_Vertex pyramid[] = {
+  Fpx3d_Model_Vertex pyramid[] = {
       {.position = {0.0f, 0.0f, 1.5f}, .color = {1.0f, 1.0f, 1.0f}},
       {.position = {-0.5f, -0.5f, 0.5f}, .color = {0.0f, 0.0f, 0.0f}},
       {.position = {-0.5f, 0.5f, 0.5f}, .color = {0.0f, 0.0f, 1.0f}},
@@ -495,7 +499,7 @@ void create_shapes(void) {
   FATAL_FAIL(fpx3d_vk_create_shapebuffer(&vk_ctx, lgpu, &pyramid_bundle,
                                          &pyramid_buffer));
 
-  vertex_binding.sizePerVertex = sizeof(Fpx3d_Vk_Vertex);
+  vertex_binding.sizePerVertex = sizeof(Fpx3d_Model_Vertex);
   vertex_binding.attributeCount = ARRAY_SIZE(vertex_attributes);
   vertex_binding.attributes = vertex_attributes;
 
@@ -583,7 +587,7 @@ void destroy_vulkan(void) {
   exit(EXIT_SUCCESS);
 }
 
-int main(int argc, const char **argv) {
+int vulkan_main(int argc, char **argv) {
   fprintf(stderr, " - - - - - Build date and time: %s at %s - - - - -\n",
           __DATE__, __TIME__);
 
@@ -753,4 +757,65 @@ int main(int argc, const char **argv) {
   }
 
   PRINT_FAILURE(fpx3d_vk_destroy_window(&vk_ctx, dest_callback));
+
+  return EXIT_SUCCESS;
+}
+
+int model_main(int argc, char **argv) {
+
+  if (argc < 2) {
+    FPX3D_ERROR(
+        "Must pass GLB/glTF file name as first argument on the command line");
+    return EXIT_FAILURE;
+  }
+
+  char *file_name = argv[1];
+
+  Fpx3d_Model_GltfAsset model = {0};
+
+  FILE *gltf = fopen(file_name, "rb");
+  if (NULL == gltf) {
+    perror("fopen()");
+    FPX3D_ERROR("Error occured while opening file \"%s\". Does it exist in "
+                "this location?",
+                file_name);
+    return EXIT_FAILURE;
+  }
+
+  fseek(gltf, 0, SEEK_END);
+  int file_len = ftell(gltf);
+  rewind(gltf);
+
+  uint8_t *gltf_file = (uint8_t *)malloc(file_len);
+  if (NULL == gltf_file) {
+    fclose(gltf);
+    return EXIT_FAILURE;
+  }
+
+  if ((unsigned long)file_len > fread(gltf_file, 1, file_len, gltf)) {
+    fclose(gltf);
+    FREE_SAFE(gltf_file);
+    return EXIT_FAILURE;
+  }
+
+  fpx3d_model_read_gltf(gltf_file, file_len, &model);
+
+  if (FPX3D_GLTF_CONTAINER_INVALID == model.containerType) {
+    FPX3D_ERROR("Error while attempting to parse glTF/GLB file loaded from %s",
+                file_name);
+
+    return EXIT_FAILURE;
+  } else {
+    FPX3D_DEBUG("Successfully parsed glTF/GLB file loaded from %s", file_name);
+
+    return EXIT_SUCCESS;
+  }
+
+  return CONDITIONAL(FPX3D_GLTF_CONTAINER_INVALID != model.containerType,
+                     EXIT_SUCCESS, EXIT_FAILURE);
+}
+
+int main(int argc, char **argv) {
+  return vulkan_main(argc, argv);
+  // return model_main(argc, argv);
 }

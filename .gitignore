@@ -64,6 +64,7 @@ build/
 archives/
 
 compile_commands.json
+assets/
 
 # use this for custom make parameters n stuff
 make/custom.mk

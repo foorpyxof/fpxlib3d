@@ -38,7 +38,7 @@ Fpx3d_E_Result fpx3d_vk_create_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->renderPasses, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->renderPasses, FPX3D_NULLPTR_ERROR);
 
   UNUSED(ctx);
 
@@ -181,7 +181,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_renderpass_at(Fpx3d_Vk_LogicalGpu *lgpu,
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
-  NULL_CHECK(lgpu->renderPasses, FPX3D_VK_NULLPTR_ERROR);
+  NULL_CHECK(lgpu->renderPasses, FPX3D_NULLPTR_ERROR);
 
   if (lgpu->renderPassCapacity <= index)
     return FPX3D_INDEX_OUT_OF_RANGE_ERROR;
