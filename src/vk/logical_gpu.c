@@ -6,7 +6,9 @@
 #include "debug.h"
 #include "macros.h"
 #include "volk/volk.h"
+
 #include <string.h>
+#include <unistd.h>
 
 #include "vk/context.h"
 #include "vk/pipeline.h"

@@ -17,6 +17,7 @@
 #include "vk/typedefs.h"
 #include "vk/utility.h"
 #include "volk/volk.h"
+#include "window/window.h"
 
 #include "vk/swapchain.h"
 
@@ -330,19 +331,21 @@ Fpx3d_E_Result fpx3d_vk_refresh_current_swapchain(Fpx3d_Vk_Context *ctx,
                                                   Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
   NULL_CHECK(ctx->windowContext, FPX3D_VK_BAD_WINDOW_CONTEXT_ERROR);
-  NULL_CHECK(ctx->windowContext->glfwWindow, FPX3D_WND_BAD_WINDOW_HANDLE_ERROR);
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
+
+  Fpx3d_Wnd_Context *wnd = ctx->windowContext;
+
+  NULL_CHECK(wnd->pointer, FPX3D_NULLPTR_ERROR);
+  NULL_CHECK(wnd->sizeCallback, FPX3D_NULLPTR_ERROR);
 
   if (VK_NULL_HANDLE == lgpu->currentSwapchain.swapchain)
     return FPX3D_VK_SWAPCHAIN_INVALID_ERROR;
 
-  int width = 0, height = 0;
-  glfwGetFramebufferSize(ctx->windowContext->glfwWindow, &width, &height);
+  struct fpx3d_wnd_dimensions new_dims = wnd->sizeCallback(wnd->pointer);
 
-  while (0 == width || 0 == height) {
-    glfwGetFramebufferSize(ctx->windowContext->glfwWindow, &width, &height);
-    glfwWaitEvents();
+  while (0 == new_dims.width || 0 == new_dims.height) {
+    new_dims = wnd->sizeCallback(wnd->pointer);
   }
 
   vkDeviceWaitIdle(lgpu->handle);
@@ -570,17 +573,21 @@ static VkExtent2D _new_window_extent(Fpx3d_Wnd_Context *wnd,
                                      VkSurfaceCapabilitiesKHR cap) {
   VkExtent2D retval = {0};
   NULL_CHECK(wnd, retval);
+  NULL_CHECK(wnd->pointer, retval);
+  NULL_CHECK(wnd->sizeCallback, retval);
 
   if (cap.currentExtent.width != UINT32_MAX)
     return cap.currentExtent;
 
-  int width, height;
+  //
+  // glfwGetFramebufferSize(wnd->glfwWindow, &width, &height);
+  //
 
-  glfwGetFramebufferSize(wnd->glfwWindow, &width, &height);
+  struct fpx3d_wnd_dimensions new_dims = wnd->sizeCallback(wnd->pointer);
 
-  retval.height = CLAMP((uint32_t)height, cap.minImageExtent.height,
+  retval.height = CLAMP((uint32_t)new_dims.height, cap.minImageExtent.height,
                         cap.maxImageExtent.height);
-  retval.width = CLAMP((uint32_t)width, cap.minImageExtent.width,
+  retval.width = CLAMP((uint32_t)new_dims.width, cap.minImageExtent.width,
                        cap.maxImageExtent.width);
 
   return retval;

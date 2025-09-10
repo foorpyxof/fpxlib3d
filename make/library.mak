@@ -1,4 +1,4 @@
-LIBRARY_NAMES := vk general model
+LIBRARY_NAMES := vk general model window
 
 OBJECTS_FOLDER := $(BUILD_FOLDER)/objects
 LIBRARY_FOLDER := $(BUILD_FOLDER)/lib

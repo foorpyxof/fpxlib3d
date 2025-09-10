@@ -72,4 +72,5 @@ Install the `mingw-w64` toolchain packaged by your Linux distribution of choice.
 
 
 ## 3. Known issues <a name="known_issues"></a>
-- When resizing a Vulkan Window too quickly and for too long, an error will occur stating that a new Swapchain could not be created. A crash will subsequently occur. This issue has been recorded on X11, using NVIDIA's 580.76.05-3 drivers.
+- When resizing a Vulkan Window too quickly and for too long, an error will occur stating that a new Swapchain could not be created. This issue has been recorded on X11.
+  - Additionally, on NVIDIA, this will also cause a crash to occur.

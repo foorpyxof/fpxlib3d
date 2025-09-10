@@ -8,7 +8,6 @@
 
 #include <vulkan/vulkan_core.h>
 
-#include "GLFW/glfw3.h"
 #include "debug.h"
 #include "fpx3d.h"
 #include "macros.h"
@@ -22,10 +21,6 @@
 #include "vk/context.h"
 
 extern void __fpx3d_vk_destroy_lgpu(Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *);
-
-// static declarations -----------------------
-static void _glfw_resize_callback(GLFWwindow *, int width, int height);
-// end of static declarations ----------------
 
 Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *ctx,
                                      Fpx3d_Wnd_Context *wnd) {
@@ -43,7 +38,7 @@ Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *ctx,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
+Fpx3d_E_Result fpx3d_vk_create_instance(Fpx3d_Vk_Context *ctx) {
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
 
   Fpx3d_Wnd_Context *wnd = ctx->windowContext;
@@ -52,10 +47,6 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
 
   if (VK_STRUCTURE_TYPE_APPLICATION_INFO != ctx->appInfo.sType)
     return FPX3D_VK_APPINFO_ERROR;
-
-  if (NULL == wnd->windowTitle || 1 > wnd->windowDimensions[0] ||
-      1 > wnd->windowDimensions[1])
-    return FPX3D_WND_INVALID_DETAILS_ERROR;
 
 #ifdef FPX_VK_USE_VALIDATION_LAYERS
   const char *val_layer_ext = "VK_LAYER_KHRONOS_validation";
@@ -84,18 +75,6 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
   }
 
   VkInstanceCreateInfo inst_info = {0};
-
-  glfwInit();
-  glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-
-  wnd->glfwWindow =
-      glfwCreateWindow(wnd->windowDimensions[0], wnd->windowDimensions[1],
-                       wnd->windowTitle, NULL, NULL);
-
-  if (NULL == wnd->glfwWindow) {
-    return FPX3D_WND_WINDOW_CREATE_ERROR;
-  }
 
   inst_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   inst_info.pApplicationInfo = &ctx->appInfo;
@@ -126,15 +105,8 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
   inst_info.enabledLayerCount = layer_count;
   inst_info.ppEnabledLayerNames = total_layers;
 
-  uint32_t glfw_extensions_count = 0;
-  const char **glfw_extensions = NULL;
-
-  glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extensions_count);
-
-  FPX3D_DEBUG("%u extensions supported.", glfw_extensions_count);
-
-  inst_info.enabledExtensionCount = glfw_extensions_count;
-  inst_info.ppEnabledExtensionNames = glfw_extensions;
+  inst_info.enabledExtensionCount = ctx->instanceExtensionCount;
+  inst_info.ppEnabledExtensionNames = ctx->instanceExtensions;
 
   VkResult res = vkCreateInstance(&inst_info, NULL, &ctx->vkInstance);
 
@@ -145,23 +117,16 @@ Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *ctx) {
 
   volkLoadInstance(ctx->vkInstance);
 
-  res = glfwCreateWindowSurface(ctx->vkInstance, ctx->windowContext->glfwWindow,
-                                NULL, &ctx->vkSurface);
-
   if (VK_SUCCESS != res)
     return FPX3D_VK_SURFACE_CREATE_ERROR;
 
-  glfwSetWindowUserPointer(ctx->windowContext->glfwWindow, ctx->windowContext);
-  glfwSetWindowSizeCallback(ctx->windowContext->glfwWindow,
-                            _glfw_resize_callback);
-
-  FPX3D_DEBUG("Successfully created Vulkan instance, window and surface");
+  FPX3D_DEBUG("Successfully created Vulkan instance");
 
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *ctx,
-                                       void (*destruction_callback)(void *)) {
+Fpx3d_E_Result fpx3d_vk_destroy_instance(Fpx3d_Vk_Context *ctx,
+                                         void (*destruction_callback)(void *)) {
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
 
   Fpx3d_Wnd_Context *wnd = ctx->windowContext;
@@ -184,13 +149,8 @@ Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *ctx,
   if (VK_NULL_HANDLE != ctx->vkInstance)
     vkDestroySurfaceKHR(ctx->vkInstance, ctx->vkSurface, NULL);
 
-  if (NULL != wnd->glfwWindow)
-    glfwDestroyWindow(wnd->glfwWindow);
-
   if (VK_NULL_HANDLE != ctx->vkSurface)
     vkDestroyInstance(ctx->vkInstance, NULL);
-
-  glfwTerminate();
 
   memset(ctx, 0, sizeof(*ctx));
 
@@ -326,23 +286,3 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
 
   return retval;
 }
-
-// STATIC FUNCTIONS -----------------------------------
-
-static void _glfw_resize_callback(GLFWwindow *window, int width, int height) {
-  Fpx3d_Wnd_Context *w_ctx =
-      (Fpx3d_Wnd_Context *)glfwGetWindowUserPointer(window);
-
-  if (NULL == w_ctx) {
-    FPX3D_WARN("GLFW resize callback called, but could not retrieve "
-               "matching window_context");
-    return;
-  }
-
-  w_ctx->windowDimensions[0] = (uint16_t)width;
-  w_ctx->windowDimensions[1] = (uint16_t)height;
-
-  w_ctx->resized = true;
-}
-
-// END OF STATIC FUNCTIONS ----------------------------

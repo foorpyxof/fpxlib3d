@@ -9,7 +9,7 @@
 #include <sys/types.h>
 
 #include "fpx3d.h"
-#include "window.h"
+#include "window/window.h"
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "cglm/include/cglm/types.h"

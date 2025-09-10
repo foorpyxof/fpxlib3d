@@ -12,7 +12,8 @@
 #include "model/model.h"
 #include "model/typedefs.h"
 #include "vk.h"
-#include "window.h"
+#include "window/window.h"
+#include <vulkan/vulkan_core.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 
@@ -34,9 +35,8 @@
 #include "cglm/include/cglm/util.h"
 #include "cglm/include/cglm/vec3.h"
 
-#include <GLFW/glfw3.h>
-
 #include "volk/volk.h"
+#include <GLFW/glfw3.h>
 #include <assert.h>
 #include <signal.h>
 #include <stddef.h>
@@ -45,6 +45,9 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+#define WINDOW_WIDTH 800
+#define WINDOW_HEIGHT 800
 
 #define LOGICAL_GPU_COUNT 1
 
@@ -133,7 +136,8 @@ void handle_inputs(float delta) {
   }
 }
 
-void dest_callback(void *);
+static struct fpx3d_wnd_dimensions _wnd_size(void *);
+static void dest_callback(void *);
 
 Fpx3d_Vk_Context vk_ctx = {0};
 
@@ -168,7 +172,7 @@ static void sig_catcher(int signo) {
   }
 
   fprintf(stderr, "\n%ssignal received. Exiting\n", type);
-  fpx3d_vk_destroy_window(&vk_ctx, dest_callback);
+  fpx3d_vk_destroy_instance(&vk_ctx, dest_callback);
 
   exit(128 + signo);
 }
@@ -274,6 +278,38 @@ VkCommandBuffer *graphics_buffer = NULL;
 
 Fpx3d_Vk_RenderPass *render_pass = NULL;
 
+GLFWwindow *glfw_window = NULL;
+VkSurfaceKHR glfw_surface = VK_NULL_HANDLE;
+
+void glfw_setup(void) {
+  glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+  glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+  glfw_window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "gock and galls",
+                                 NULL, NULL);
+
+  if (NULL == glfw_window) {
+    FPX3D_ERROR("Could not create window");
+  }
+
+  VkResult surface_res = glfwCreateWindowSurface(vk_ctx.vkInstance, glfw_window,
+                                                 NULL, &glfw_surface);
+
+  if (VK_SUCCESS > surface_res) {
+    FPX3D_ERROR("Could not create Vulkan Surface")
+    raise(SIGTERM);
+  }
+
+  vk_ctx.vkSurface = glfw_surface;
+
+  fpx3d_wnd_set_window_pointer(vk_ctx.windowContext, glfw_window);
+}
+
+void glfw_teardown(void) {
+  glfwDestroyWindow(glfw_window);
+  glfwTerminate();
+}
+
 void dest_callback(void *custom_ptr) {
   fprintf(stderr, "%s\n", (const char *)custom_ptr);
 
@@ -300,6 +336,8 @@ void dest_callback(void *custom_ptr) {
 
   PRINT_FAILURE(fpx3d_vk_destroy_shadermodules(&modules, lgpu));
   PRINT_FAILURE(fpx3d_vk_destroy_pipeline_layout(&pipeline_layout, lgpu));
+
+  glfw_teardown();
 }
 
 VkPhysicalDeviceFeatures lgpu_features = {
@@ -307,14 +345,13 @@ VkPhysicalDeviceFeatures lgpu_features = {
     .samplerAnisotropy = VK_TRUE,
 };
 
-Fpx3d_Wnd_Context wnd_ctx = {.glfwWindow = NULL,
-                             .windowDimensions = {800, 800},
-                             .windowTitle = "YAY",
-                             .resized = false};
+Fpx3d_Wnd_Context wnd_ctx = {.pointer = NULL, .sizeCallback = _wnd_size};
 
 void vulkan_setup(void) {
   fpx3d_vk_set_required_surfaceformats(&sc_reqs, formats, ARRAY_SIZE(formats));
   fpx3d_vk_set_required_presentmodes(&sc_reqs, modes, ARRAY_SIZE(modes));
+
+  glfwInit();
 
   {
     VkApplicationInfo app_info = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -333,13 +370,20 @@ void vulkan_setup(void) {
     vk_ctx.lgpuExtensions = extensions;
     vk_ctx.lgpuExtensionCount = ARRAY_SIZE(extensions);
 
+    uint32_t glfw_ext_count = 0;
+    vk_ctx.instanceExtensions =
+        glfwGetRequiredInstanceExtensions(&glfw_ext_count);
+    vk_ctx.instanceExtensionCount = glfw_ext_count;
+
     PRINT_FAILURE(fpx3d_vk_set_custom_pointer(&vk_ctx, "🏳️‍⚧️"));
   }
 
   FATAL_FAIL(fpx3d_vk_init_context(&vk_ctx, &wnd_ctx));
   vk_ctx.constants.maxFramesInFlight = 2;
 
-  FATAL_FAIL(fpx3d_vk_create_window(&vk_ctx));
+  FATAL_FAIL(fpx3d_vk_create_instance(&vk_ctx));
+
+  glfw_setup();
 
   FATAL_FAIL(fpx3d_vk_select_gpu(&vk_ctx, gpu_suitability));
 
@@ -583,14 +627,11 @@ void create_pipeline_descriptors(void) {
 }
 
 void destroy_vulkan(void) {
-  fpx3d_vk_destroy_window(&vk_ctx, dest_callback);
+  fpx3d_vk_destroy_instance(&vk_ctx, dest_callback);
   exit(EXIT_SUCCESS);
 }
 
 int vulkan_main(int argc, char **argv) {
-  fprintf(stderr, " - - - - - Build date and time: %s at %s - - - - -\n",
-          __DATE__, __TIME__);
-
   signal(SIGINT, sig_catcher);
   signal(SIGABRT, sig_catcher);
   signal(SIGTERM, sig_catcher);
@@ -644,10 +685,7 @@ int vulkan_main(int argc, char **argv) {
   fpx3d_vk_update_shape_descriptor(&pyramid_shape, 0, 0, &pyramid_model,
                                    &vk_ctx, lgpu);
 
-  if (NULL == vk_ctx.windowContext->glfwWindow)
-    exit(EXIT_FAILURE);
-
-  glfwSetKeyCallback(wnd_ctx.glfwWindow, key_cb);
+  glfwSetKeyCallback(glfw_window, key_cb);
 
   float delta = 0.02f;
 
@@ -690,7 +728,7 @@ int vulkan_main(int argc, char **argv) {
                     "  For decreasing/increasing camera movement speed\n");
   }
 
-  while (!glfwWindowShouldClose(vk_ctx.windowContext->glfwWindow)) {
+  while (!glfwWindowShouldClose(glfw_window)) {
     glfwPollEvents();
 
     if (argc > 1 && NULL != argv) {
@@ -756,7 +794,7 @@ int vulkan_main(int argc, char **argv) {
     // #endif
   }
 
-  PRINT_FAILURE(fpx3d_vk_destroy_window(&vk_ctx, dest_callback));
+  PRINT_FAILURE(fpx3d_vk_destroy_instance(&vk_ctx, dest_callback));
 
   return EXIT_SUCCESS;
 }
@@ -816,6 +854,22 @@ int model_main(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+  fprintf(stderr, " - - - - - Build date and time: %s at %s - - - - -\n",
+          __DATE__, __TIME__);
+
   return vulkan_main(argc, argv);
   // return model_main(argc, argv);
+}
+
+static struct fpx3d_wnd_dimensions _wnd_size(void *ptr) {
+  struct fpx3d_wnd_dimensions retval = {0};
+  NULL_CHECK(ptr, retval);
+
+  int w, h;
+
+  glfwGetWindowSize(ptr, &w, &h);
+  retval.width = w;
+  retval.height = h;
+
+  return retval;
 }

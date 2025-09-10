@@ -7,7 +7,7 @@
 #define FPX_VK_CONTEXT_H
 
 #include "fpx3d.h"
-#include "window.h"
+#include "window/window.h"
 
 #include "vk/typedefs.h"
 
@@ -28,6 +28,9 @@ struct _fpx3d_vk_context {
   const char **instanceLayers;
   size_t instanceLayerCount;
 
+  const char **instanceExtensions;
+  size_t instanceExtensionCount;
+
   VkInstance vkInstance;
   VkSurfaceKHR vkSurface;
 
@@ -44,9 +47,9 @@ Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *, Fpx3d_Wnd_Context *);
 // don't pass VK_LAYER_KHRONOS_validation in the context. this is automatically
 // enabled in the `debug` build of the library, and enabling it in your call to
 // create a window here will only cause issues. Fix pending
-Fpx3d_E_Result fpx3d_vk_create_window(Fpx3d_Vk_Context *);
-Fpx3d_E_Result fpx3d_vk_destroy_window(Fpx3d_Vk_Context *,
-                                       void (*destruction_callback)(void *));
+Fpx3d_E_Result fpx3d_vk_create_instance(Fpx3d_Vk_Context *);
+Fpx3d_E_Result fpx3d_vk_destroy_instance(Fpx3d_Vk_Context *,
+                                         void (*destruction_callback)(void *));
 Fpx3d_Wnd_Context *fpx3d_vk_get_windowcontext(Fpx3d_Vk_Context *);
 
 Fpx3d_E_Result fpx3d_vk_set_custom_pointer(Fpx3d_Vk_Context *, void *);

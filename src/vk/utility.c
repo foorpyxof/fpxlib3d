@@ -183,8 +183,6 @@ fpx3d_vk_draw_frame(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
         FPX3D_VK_FRAME_SUBOPTIMAL_ERROR == success) {
       fpx3d_vk_refresh_current_swapchain(ctx, lgpu);
 
-      ctx->windowContext->resized = false;
-
       return FPX3D_SUCCESS;
     } else if (FPX3D_SUCCESS != success) {
       FPX3D_WARN("Could not present image");

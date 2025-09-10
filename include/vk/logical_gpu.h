@@ -7,7 +7,7 @@
 #define FPX_VK_LOGICAL_GPU_H
 
 #include "fpx3d.h"
-#include "window.h"
+#include "window/window.h"
 
 #include "vk/command.h"
 #include "vk/queues.h"
