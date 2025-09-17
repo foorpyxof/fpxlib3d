@@ -26,7 +26,7 @@ else
 	TARGET := $(LINUX_TARGET_NAME)
 endif
 
-include make/*.mk
+-include make/*.mk
 
 ifeq ($(TARGET),$(WINDOWS_TARGET_NAME))
 

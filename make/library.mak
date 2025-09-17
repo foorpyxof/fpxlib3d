@@ -32,12 +32,12 @@ define new-lib-target
 LIBS_RELEASE += $(LIBRARY_FOLDER)/$(LIB_PREFIX)$(1)$(LIB_EXT)
 $(LIBRARY_FOLDER)/$(LIB_PREFIX)$(1)$(LIB_EXT): $($(1)_OBJ_REL) | $(LIBRARY_FOLDER)
 	-if [ -f $$@ ]; then rm $$@; fi
-	$(AR) cr --thin $$@ $$? && echo -e 'create $$@\naddlib $$@\nsave\nend' | ar -M
+	$(AR) cr --thin $$@ $$^ && echo -e 'create $$@\naddlib $$@\nsave\nend' | ar -M
 
 LIBS_DEBUG += $(LIBRARY_FOLDER)/$(LIB_PREFIX)$(1)$(DEBUG_SUFFIX)$(LIB_EXT)
 $(LIBRARY_FOLDER)/$(LIB_PREFIX)$(1)$(DEBUG_SUFFIX)$(LIB_EXT): $($(1)_OBJ_DBG) | $(LIBRARY_FOLDER)
 	-if [ -f $$@ ]; then rm $$@; fi
-	$(AR) cr --thin $$@ $$? && echo -e 'create $$@\naddlib $$@\nsave\nend' | ar -M
+	$(AR) cr --thin $$@ $$^ && echo -e 'create $$@\naddlib $$@\nsave\nend' | ar -M
 
 endef
 
