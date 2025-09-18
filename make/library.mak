@@ -15,7 +15,7 @@ $(LIBRARY_FOLDER):
 	mkdir -p $@
 
 $(MODULES_DIR)/%:
-	./scripts/update-submodules.sh
+	./scripts/init-submodules.sh
 
 $(MODULES_DIR)/fpxlibc/build/lib/%$(LIB_EXT): | $(MODULES_DIR)/fpxlibc
 	cd $|; $(MAKE) $(subst $(MODULES_DIR)/fpxlibc/,,$@)
