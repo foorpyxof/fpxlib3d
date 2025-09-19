@@ -6,9 +6,9 @@
 #ifndef FPX_VK_IMAGE_H
 #define FPX_VK_IMAGE_H
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_image_dimensions {
   uint32_t width;

@@ -8,9 +8,9 @@
 
 #include <sys/types.h>
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_qf {
   ssize_t qfIndex;

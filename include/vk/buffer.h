@@ -8,7 +8,7 @@
 
 #include <stdbool.h>
 
-#include "vk/typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_buffer {
   size_t objectCount;

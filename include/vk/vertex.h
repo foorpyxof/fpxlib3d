@@ -9,9 +9,10 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "../fpx3d.h"
 #include "../model/model.h"
-#include "fpx3d.h"
-#include "typedefs.h"
+
+#include "./typedefs.h"
 
 #include "cglm/include/cglm/types.h"
 

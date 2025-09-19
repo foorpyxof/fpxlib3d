@@ -8,10 +8,10 @@
 
 #include <stdbool.h>
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/buffer.h"
-#include "vk/typedefs.h"
+#include "./buffer.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_shapebuffer {
   Fpx3d_Vk_Buffer vertexBuffer;

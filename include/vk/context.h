@@ -6,10 +6,10 @@
 #ifndef FPX_VK_CONTEXT_H
 #define FPX_VK_CONTEXT_H
 
-#include "fpx3d.h"
-#include "window/window.h"
+#include "../fpx3d.h"
+#include "../window/window.h"
 
-#include "vk/typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_context {
   Fpx3d_Wnd_Context *windowContext;

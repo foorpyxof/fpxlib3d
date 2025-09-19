@@ -6,13 +6,13 @@
 #ifndef FPX_VK_LOGICAL_GPU_H
 #define FPX_VK_LOGICAL_GPU_H
 
-#include "fpx3d.h"
-#include "window/window.h"
+#include "../fpx3d.h"
+#include "../window/window.h"
 
-#include "vk/command.h"
-#include "vk/queues.h"
-#include "vk/swapchain.h"
-#include "vk/typedefs.h"
+#include "./command.h"
+#include "./queues.h"
+#include "./swapchain.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_lgpu {
   VkDevice handle;

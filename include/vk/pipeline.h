@@ -9,9 +9,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_pipeline_layout {
   VkPipelineLayout handle;

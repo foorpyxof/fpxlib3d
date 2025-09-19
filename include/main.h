@@ -6,7 +6,7 @@
 #ifndef FPX_MAIN_H
 #define FPX_MAIN_H
 
-#include "vk.h"
+#include "./vk.h"
 
 typedef struct cube {
   Fpx3d_Vk_Shape sides[6];

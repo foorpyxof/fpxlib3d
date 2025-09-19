@@ -25,7 +25,7 @@ Either way, NVIDIA on X11 works fully as intended
 Make sure to:
 - Pull the git submodules before building
 ```shell
-git submodule update --init --recursive
+./scripts/init-submodules.sh
 ```
 
 #### 2.1.2. Makefile targets <a name="build_make_targets"></a>

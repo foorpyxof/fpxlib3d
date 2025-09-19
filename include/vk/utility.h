@@ -10,9 +10,9 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/typedefs.h"
+#include "./typedefs.h"
 
 struct fpx3d_vulkan_pool_queue_pair {
   VkCommandPool *pool;

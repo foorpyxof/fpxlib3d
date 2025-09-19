@@ -6,10 +6,10 @@
 #ifndef FPX_VK_DESCRIPTORS_H
 #define FPX_VK_DESCRIPTORS_H
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/buffer.h"
-#include "vk/typedefs.h"
+#include "./buffer.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_descriptor_set_layout {
   VkDescriptorSetLayout handle;

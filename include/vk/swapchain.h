@@ -6,10 +6,10 @@
 #ifndef FPX_VK_SWAPCHAIN_H
 #define FPX_VK_SWAPCHAIN_H
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/image.h"
-#include "vk/typedefs.h"
+#include "./image.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_sc_frame {
   VkImage image;

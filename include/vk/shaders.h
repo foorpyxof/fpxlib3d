@@ -6,9 +6,9 @@
 #ifndef FPX_VK_SHADERS_H
 #define FPX_VK_SHADERS_H
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "vk/typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_spirv {
   uint8_t *buffer;

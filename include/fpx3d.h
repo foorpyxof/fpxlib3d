@@ -62,7 +62,7 @@ typedef enum {
   FPX3D_MODEL_INVALID_FILE_ERROR = -30001,
 } Fpx3d_E_Result;
 
-#include "macros.h"
+#include "./macros.h"
 #include <stdbool.h>
 
 #endif // FPX_3D_H

@@ -6,9 +6,9 @@
 #ifndef FPX_VK_COMMAND_H
 #define FPX_VK_COMMAND_H
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 
-#include "typedefs.h"
+#include "./typedefs.h"
 
 struct _fpx3d_vk_command_pool {
   VkCommandPool pool;
