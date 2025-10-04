@@ -28,14 +28,32 @@ struct _fpx3d_vk_pipeline {
 
   Fpx3d_Vk_E_PipelineType type;
 
+#ifndef __cplusplus
   union {
-    struct {
+#endif // ! __cplusplus
+    struct
+#ifdef __cplusplus
+        _graphics_pipeline
+#endif // __cplusplus
+    {
       Fpx3d_Vk_Shape **shapes;
       size_t shapeCount;
 
       Fpx3d_Vk_RenderPass *renderPassReference;
-    } graphics;
+    }
+
+#ifndef __cplusplus
+    graphics;
+  }
+#endif // ! __cplusplus
+  ;
+#ifdef __cplusplus
+  union {
+    struct _graphics_pipeline graphics;
   };
+#endif // __cplusplus
+
+  // FUCK C++
 
   struct {
     Fpx3d_Vk_DescriptorSet *inFlightDescriptorSets;

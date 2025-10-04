@@ -78,6 +78,9 @@ Fpx3d_E_Result fpx3d_vk_create_instance(Fpx3d_Vk_Context *ctx) {
 
   inst_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   inst_info.pApplicationInfo = &ctx->appInfo;
+  ctx->appInfo.pEngineName = "FPXLIB3D_VK";
+  ctx->appInfo.engineVersion = VK_MAKE_VERSION(0, 3, 0);
+  ctx->appInfo.apiVersion = VK_API_VERSION_1_0;
 
   size_t layer_count = ctx->instanceLayerCount;
   size_t alloc_count = layer_count;
