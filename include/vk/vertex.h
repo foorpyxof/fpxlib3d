@@ -14,7 +14,7 @@
 
 #include "./typedefs.h"
 
-#include "cglm/include/cglm/types.h"
+#include "../../modules/cglm/include/cglm/types.h"
 
 struct _fpx3d_vk_vertex_bundle {
   // size of the Vertex data in bytes (for a single vertex).

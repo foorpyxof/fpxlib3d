@@ -8,10 +8,10 @@
 
 #include <sys/types.h>
 
-#include "fpx3d.h"
+#include "../fpx3d.h"
 #include "typedefs.h"
 
-#include "cglm/include/cglm/types.h"
+#include "../../modules/cglm/include/cglm/types.h"
 
 struct _fpx3d_model_model {
   size_t vertexCount;
