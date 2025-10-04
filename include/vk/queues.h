@@ -20,16 +20,19 @@ struct _fpx3d_vk_qf {
   bool isValid;
 };
 
+struct _fpx3d_vk_qf_req_graphics {
+  uint32_t requiredFlags;
+};
+
+struct _fpx3d_vk_qf_req_present {
+  VkSurfaceKHR surface;
+  VkPhysicalDevice gpu;
+};
+
 struct _fpx3d_vk_qf_req {
   union {
-    struct {
-      uint32_t requiredFlags;
-    } graphics;
-
-    struct {
-      VkSurfaceKHR surface;
-      VkPhysicalDevice gpu;
-    } present;
+    struct _fpx3d_vk_qf_req_graphics graphics;
+    struct _fpx3d_vk_qf_req_present present;
   };
 
   size_t minimumQueues;

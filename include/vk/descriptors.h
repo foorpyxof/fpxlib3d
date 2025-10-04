@@ -18,15 +18,17 @@ struct _fpx3d_vk_descriptor_set_layout {
   bool isValid;
 };
 
+struct _fpx3d_vk_descriptor_set_binding_image_sampler {
+  Fpx3d_Vk_Texture **textureReferences;
+};
+
 struct _fpx3d_vk_descriptor_set_binding {
   size_t elementCount, elementSize;
   Fpx3d_Vk_E_DescriptorType type;
   Fpx3d_Vk_E_ShaderStage shaderStages;
 
   union {
-    struct {
-      Fpx3d_Vk_Texture **textureReferences;
-    } imageSampler;
+    struct _fpx3d_vk_descriptor_set_binding_image_sampler imageSampler;
   };
 };
 

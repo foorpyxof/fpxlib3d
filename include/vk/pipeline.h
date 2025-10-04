@@ -22,38 +22,22 @@ struct _fpx3d_vk_pipeline_layout {
   bool isValid;
 };
 
+struct _fpx3d_vk_pipeline_graphics {
+  Fpx3d_Vk_Shape **shapes;
+  size_t shapeCount;
+
+  Fpx3d_Vk_RenderPass *renderPassReference;
+};
+
 struct _fpx3d_vk_pipeline {
   VkPipeline handle;
   Fpx3d_Vk_PipelineLayout layout;
 
   Fpx3d_Vk_E_PipelineType type;
 
-#ifndef __cplusplus
   union {
-#endif // ! __cplusplus
-    struct
-#ifdef __cplusplus
-        _graphics_pipeline
-#endif // __cplusplus
-    {
-      Fpx3d_Vk_Shape **shapes;
-      size_t shapeCount;
-
-      Fpx3d_Vk_RenderPass *renderPassReference;
-    }
-
-#ifndef __cplusplus
-    graphics;
-  }
-#endif // ! __cplusplus
-  ;
-#ifdef __cplusplus
-  union {
-    struct _graphics_pipeline graphics;
+    struct _fpx3d_vk_pipeline_graphics graphics;
   };
-#endif // __cplusplus
-
-  // FUCK C++
 
   struct {
     Fpx3d_Vk_DescriptorSet *inFlightDescriptorSets;

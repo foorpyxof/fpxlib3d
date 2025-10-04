@@ -22,6 +22,14 @@ struct _fpx3d_model_gltf_scene {
   Fpx3d_Model_GltfNode **nodes;
 };
 
+struct _fpx3d_model_gltf_camera_perspective {
+  float fov, aspectRatio;
+};
+
+struct _fpx3d_model_gltf_camera_orthographic {
+  float xmag, ymag;
+};
+
 struct _fpx3d_model_gltf_camera {
   char *name;
 
@@ -32,12 +40,8 @@ struct _fpx3d_model_gltf_camera {
   } type;
 
   union {
-    struct {
-      float fov, aspectRatio;
-    } perspective;
-    struct {
-      float xmag, ymag;
-    } orthographic;
+    struct _fpx3d_model_gltf_camera_perspective perspective;
+    struct _fpx3d_model_gltf_camera_orthographic orthographic;
   };
 
   float nearPlane, farPlane;
@@ -355,17 +359,18 @@ struct fpx3d_model_glb_chunk {
   };
 };
 
+struct _fpx3d_model_gltf_asset_glb {
+  uint32_t containerVersion;
+  size_t chunkCount;
+  struct fpx3d_model_glb_chunk chunks[2];
+};
+
 struct _fpx3d_model_gltf_asset {
   Fpx3d_Model_E_GltfContainerType containerType;
 
   union {
     Fpx3d_Model_GltfAssetDescription gltf;
-
-    struct {
-      uint32_t containerVersion;
-      size_t chunkCount;
-      struct fpx3d_model_glb_chunk chunks[2];
-    } glb;
+    struct _fpx3d_model_gltf_asset_glb glb;
   };
 };
 
