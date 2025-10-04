@@ -7,7 +7,7 @@
 #define FPX_WINDOW_H
 
 #include "../fpx3d.h"
-#include "macros.h"
+#include "../macros.h"
 
 #include <stdbool.h>
 #include <stdint.h>
