@@ -395,8 +395,8 @@ void vulkan_setup(void) {
   present_queue = fpx3d_vk_get_queue_at(lgpu, 0, PRESENT_QUEUE);
 
   PRINT_FAILURE(fpx3d_vk_allocate_commandpools(lgpu, 2));
-  PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 0, TRANSFER_POOL));
-  PRINT_FAILURE(fpx3d_create_commandpool_at(lgpu, 1, GRAPHICS_POOL));
+  PRINT_FAILURE(fpx3d_vk_create_commandpool_at(lgpu, 0, TRANSFER_POOL));
+  PRINT_FAILURE(fpx3d_vk_create_commandpool_at(lgpu, 1, GRAPHICS_POOL));
   transfer_pool = fpx3d_vk_get_commandpool_at(lgpu, 0);
   graphics_pool = fpx3d_vk_get_commandpool_at(lgpu, 1);
 

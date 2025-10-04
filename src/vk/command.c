@@ -122,9 +122,9 @@ Fpx3d_E_Result fpx3d_vk_allocate_commandpools(Fpx3d_Vk_LogicalGpu *lgpu,
                                &lgpu->commandPoolCapacity);
 }
 
-Fpx3d_E_Result fpx3d_create_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
-                                           size_t index,
-                                           Fpx3d_Vk_E_CommandPoolType type) {
+Fpx3d_E_Result fpx3d_vk_create_commandpool_at(Fpx3d_Vk_LogicalGpu *lgpu,
+                                              size_t index,
+                                              Fpx3d_Vk_E_CommandPoolType type) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(lgpu->handle, FPX3D_VK_LGPU_INVALID_ERROR);
 
