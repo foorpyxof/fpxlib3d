@@ -10,3 +10,6 @@
 [submodule "fpxlibc"]
 	path = modules/fpxlibc
 	url = https://git.goodgirl.dev/foorpyxof/fpxlibc.git
+[submodule "Vulkan-Headers"]
+	path = modules/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git

@@ -6,8 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <vulkan/vulkan_core.h>
-
 #include "debug.h"
 #include "fpx3d.h"
 #include "macros.h"
@@ -15,6 +13,7 @@
 #include "vk/typedefs.h"
 #include "vk/utility.h"
 
+#include "vulkan/vulkan_core.h"
 #define VOLK_IMPLEMENTATION
 #include "volk/volk.h"
 

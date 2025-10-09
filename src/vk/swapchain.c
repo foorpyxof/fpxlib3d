@@ -5,7 +5,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <vulkan/vulkan_core.h>
 
 #include "debug.h"
 #include "fpx3d.h"
@@ -16,8 +15,11 @@
 #include "vk/renderpass.h"
 #include "vk/typedefs.h"
 #include "vk/utility.h"
-#include "volk/volk.h"
 #include "window/window.h"
+
+#include "vulkan/vulkan_core.h"
+
+#include "volk/volk.h"
 
 #include "vk/swapchain.h"
 

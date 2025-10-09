@@ -5,7 +5,8 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <vulkan/vulkan_core.h>
+
+#include "vulkan/vulkan_core.h"
 
 #include "vk/context.h"
 #include "vk/descriptors.h"

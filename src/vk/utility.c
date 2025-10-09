@@ -5,7 +5,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <vulkan/vulkan_core.h>
 
 #include "debug.h"
 #include "fpx3d.h"
@@ -13,6 +12,9 @@
 #include "vk/context.h"
 #include "vk/logical_gpu.h"
 #include "vk/pipeline.h"
+
+#include "Vulkan-Headers/include/vulkan/vulkan_core.h"
+
 #include "volk/volk.h"
 
 #include "vk/utility.h"

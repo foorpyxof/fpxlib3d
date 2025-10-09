@@ -4,7 +4,6 @@
  */
 
 #include <string.h>
-#include <vulkan/vulkan_core.h>
 
 #include "debug.h"
 #include "fpx3d.h"

@@ -13,7 +13,6 @@
 #include "model/typedefs.h"
 #include "vk.h"
 #include "window/window.h"
-#include <vulkan/vulkan_core.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 
@@ -34,6 +33,8 @@
 #include "cglm/include/cglm/mat4.h"
 #include "cglm/include/cglm/util.h"
 #include "cglm/include/cglm/vec3.h"
+
+#include "vulkan/vulkan_core.h"
 
 #include "volk/volk.h"
 #include <GLFW/glfw3.h>
