@@ -6,7 +6,7 @@
 #ifndef FPX_VK_TYPEDEFS_H
 #define FPX_VK_TYPEDEFS_H
 
-#include "../modules/Vulkan-Headers/include/vulkan/vulkan_core.h"
+#include "../../modules/Vulkan-Headers/include/vulkan/vulkan_core.h"
 
 typedef struct _fpx3d_vk_context Fpx3d_Vk_Context;
 
