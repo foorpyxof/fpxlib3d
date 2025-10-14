@@ -13,7 +13,11 @@
 #include "vk/typedefs.h"
 #include "vk/utility.h"
 
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif // VK_NO_PROTOTYPES
 #include "vulkan/vulkan_core.h"
+
 #define VOLK_IMPLEMENTATION
 #include "volk/volk.h"
 
@@ -184,9 +188,9 @@ struct _scored_gpu {
   int score;
 };
 
-Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
-                                   int (*scoring_function)(Fpx3d_Vk_Context *,
-                                                           VkPhysicalDevice)) {
+Fpx3d_E_Result fpx3d_vk_select_gpu(
+    Fpx3d_Vk_Context *ctx,
+    int (*scoring_function)(Fpx3d_Vk_Context *, Fpx3d_Vk_PhysicalDevice)) {
   NULL_CHECK(ctx, FPX3D_ARGS_ERROR);
   NULL_CHECK(scoring_function, FPX3D_ARGS_ERROR);
   NULL_CHECK(ctx->vkInstance, FPX3D_VK_BAD_VULKAN_INSTANCE_ERROR);
@@ -232,13 +236,15 @@ Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *ctx,
                      gpus[i], ctx->lgpuExtensions, ctx->lgpuExtensionCount))
       continue;
 
-    VkPhysicalDeviceProperties dev_props = {0};
-    vkGetPhysicalDeviceProperties(gpus[i], &dev_props);
+    Fpx3d_Vk_PhysicalDevice dev = {0};
+    vkGetPhysicalDeviceProperties(gpus[i], &dev.properties);
+    vkGetPhysicalDeviceFeatures(gpus[i], &dev.features);
+    dev.handle = gpus[i];
 
     FPX3D_DEBUG("Found GPU #%" LONG_FORMAT "d - \"%s\"", i,
-                dev_props.deviceName);
+                dev.properties.deviceName);
 
-    int score = scoring_function(ctx, gpus[i]);
+    int score = scoring_function(ctx, dev);
 
     // yipee magic
     for (ssize_t j = i; j >= 0; --j) {

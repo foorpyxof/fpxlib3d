@@ -14,6 +14,7 @@
 #include "../../modules/Vulkan-Headers/include/vulkan/vulkan_core.h"
 
 typedef struct _fpx3d_vk_context Fpx3d_Vk_Context;
+typedef struct _fpx3d_vk_physical_device Fpx3d_Vk_PhysicalDevice;
 
 typedef struct _fpx3d_vk_lgpu Fpx3d_Vk_LogicalGpu;
 

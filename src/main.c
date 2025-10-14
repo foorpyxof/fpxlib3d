@@ -12,6 +12,7 @@
 #include "model/model.h"
 #include "model/typedefs.h"
 #include "vk.h"
+#include "vk/typedefs.h"
 #include "window/window.h"
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -186,17 +187,11 @@ VkPresentModeKHR modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 
 Fpx3d_Vk_SwapchainRequirements sc_reqs = {0};
 
-int gpu_suitability(Fpx3d_Vk_Context *ctx, VkPhysicalDevice to_score) {
+int gpu_suitability(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_PhysicalDevice to_score) {
   uint8_t score = 200;
   float multiplier;
 
-  VkPhysicalDeviceProperties dev_properties = {0};
-  VkPhysicalDeviceFeatures dev_features = {0};
-
-  vkGetPhysicalDeviceProperties(to_score, &dev_properties);
-  vkGetPhysicalDeviceFeatures(to_score, &dev_features);
-
-  switch (dev_properties.deviceType) {
+  switch (to_score.properties.deviceType) {
 
   case VK_PHYSICAL_DEVICE_TYPE_CPU:
     multiplier = 0.2f;
@@ -217,14 +212,14 @@ int gpu_suitability(Fpx3d_Vk_Context *ctx, VkPhysicalDevice to_score) {
 
   // some must-have features
   // not having these is a dealbreaker
-  if (!dev_features.geometryShader) {
+  if (!to_score.features.geometryShader) {
     score = 0;
     goto gpu_suitability_ret;
   }
 
   {
     Fpx3d_Vk_SwapchainProperties props =
-        fpx3d_vk_create_swapchain_properties(ctx, to_score, sc_reqs);
+        fpx3d_vk_create_swapchain_properties(ctx, to_score.handle, sc_reqs);
 
     if (!(props.surfaceFormatValid && props.presentModeValid)) {
       score = 0;

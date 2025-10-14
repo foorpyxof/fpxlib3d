@@ -42,6 +42,12 @@ struct _fpx3d_vk_context {
   } constants;
 };
 
+struct _fpx3d_vk_physical_device {
+  VkPhysicalDevice handle; // pass to other fpx3d_vk functions
+  VkPhysicalDeviceProperties properties;
+  VkPhysicalDeviceFeatures features;
+};
+
 Fpx3d_E_Result fpx3d_vk_init_context(Fpx3d_Vk_Context *, Fpx3d_Wnd_Context *);
 
 // don't pass VK_LAYER_KHRONOS_validation in the context. this is automatically
@@ -55,8 +61,8 @@ Fpx3d_Wnd_Context *fpx3d_vk_get_windowcontext(Fpx3d_Vk_Context *);
 Fpx3d_E_Result fpx3d_vk_set_custom_pointer(Fpx3d_Vk_Context *, void *);
 void *fpx3d_vk_get_custom_pointer(Fpx3d_Vk_Context *);
 
-Fpx3d_E_Result fpx3d_vk_select_gpu(Fpx3d_Vk_Context *,
-                                   int (*scoring_function)(Fpx3d_Vk_Context *,
-                                                           VkPhysicalDevice));
+Fpx3d_E_Result fpx3d_vk_select_gpu(
+    Fpx3d_Vk_Context *,
+    int (*scoring_function)(Fpx3d_Vk_Context *, Fpx3d_Vk_PhysicalDevice));
 
 #endif // FPX_VK_CONTEXT_H
