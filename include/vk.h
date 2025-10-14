@@ -15,7 +15,6 @@
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "../modules/cglm/include/cglm/types.h"
-#include "../modules/volk/volk.h"
 
 #include "fpx3d.h"
 #include "window/window.h"
