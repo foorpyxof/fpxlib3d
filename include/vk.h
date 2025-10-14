@@ -8,6 +8,11 @@
 
 #include <sys/types.h>
 
+// so the compiler doesn't whine abt VOLK
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif // VK_NO_PROTOTYPES
+
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "../modules/cglm/include/cglm/types.h"
 #include "../modules/volk/volk.h"

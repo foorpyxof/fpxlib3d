@@ -6,6 +6,11 @@
 #ifndef FPX_VK_TYPEDEFS_H
 #define FPX_VK_TYPEDEFS_H
 
+// so the compiler doesn't whine abt VOLK
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif // VK_NO_PROTOTYPES
+
 #include "../../modules/Vulkan-Headers/include/vulkan/vulkan_core.h"
 
 typedef struct _fpx3d_vk_context Fpx3d_Vk_Context;
