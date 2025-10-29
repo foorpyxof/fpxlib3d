@@ -281,8 +281,8 @@ void glfw_setup(void) {
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-  glfw_window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "gock and galls",
-                                 NULL, NULL);
+  glfw_window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
+                                 "fpxlib3d renderer test", NULL, NULL);
 
   if (NULL == glfw_window) {
     FPX3D_ERROR("Could not create window");
