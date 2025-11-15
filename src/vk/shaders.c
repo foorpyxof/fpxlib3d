@@ -5,9 +5,11 @@
 
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "debug.h"
+#include "macros.h"
 #include "vk/logical_gpu.h"
 #include "volk/volk.h"
 

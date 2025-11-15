@@ -1,3 +1,5 @@
+#include "macros.h"
+
 #include "window/window.h"
 
 void fpx3d_wnd_set_size_callback(Fpx3d_Wnd_Context *ctx,

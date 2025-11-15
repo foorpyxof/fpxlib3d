@@ -20,11 +20,16 @@
 #define LONG_FORMAT "l"
 #endif
 
+#undef FPX3D_DEBUG
 #define FPX3D_DEBUG(fmt, ...)
+#undef FPX3D_WARN
 #define FPX3D_WARN(fmt, ...)
+#undef FPX3D_ERROR
 #define FPX3D_ERROR(fmt, ...)
+#undef FPX3D_TODO
 #define FPX3D_TODO(fmt, ...)
 
+#undef FPX3D_LINE_INFO
 #define FPX3D_LINE_INFO(output)
 
 #if (defined __FILE__ && defined __LINE__)
@@ -71,7 +76,5 @@
             _fpx_lineinfo_output_buffer);                                      \
   }
 #endif // FPX3D_DEBUG_ENABLE || !FPX3D_SILENT_ERROR
-
-#undef LIBRARY_NAME
 
 #endif // FPX3D_DEBUG_H

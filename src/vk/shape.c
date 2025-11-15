@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "fpx3d.h"
+#include "macros.h"
 #include "vk/buffer.h"
 #include "vk/context.h"
 #include "vk/descriptors.h"

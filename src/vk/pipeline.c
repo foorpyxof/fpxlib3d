@@ -8,6 +8,7 @@
 
 #include "vulkan/vulkan_core.h"
 
+#include "macros.h"
 #include "vk/context.h"
 #include "vk/descriptors.h"
 #include "vk/logical_gpu.h"

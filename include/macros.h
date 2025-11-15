@@ -8,12 +8,19 @@
 
 #include <stdlib.h>
 
+#undef ABS
 #define ABS(x) ((x < 0) ? (x * -1) : (x))
+#undef MAX
 #define MAX(x, y) ((x > y) ? x : y)
+#undef MIN
 #define MIN(x, y) ((x < y) ? x : y)
+#undef CLAMP
 #define CLAMP(v, x, y) ((v < x) ? x : (v > y) ? y : v)
+
+#undef CONDITIONAL
 #define CONDITIONAL(cond, then, else) ((cond) ? (then) : (else))
 
+#undef FPX3D_ONFAIL
 #define FPX3D_ONFAIL(result, result_storage, code)                             \
   {                                                                            \
     Fpx3d_E_Result result_storage = result;                                    \
@@ -22,8 +29,10 @@
     }                                                                          \
   }
 
+#undef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(*arr))
 
+#undef FREE_SAFE
 #define FREE_SAFE(ptr)                                                         \
   {                                                                            \
     if (NULL != ptr) {                                                         \
@@ -32,10 +41,12 @@
     }                                                                          \
   }
 
+#undef NULL_CHECK
 #define NULL_CHECK(value, ret_code)                                            \
   if (NULL == (value))                                                         \
   return ret_code
 
+#undef UNUSED
 #define UNUSED(var)                                                            \
   {                                                                            \
     char _fpx_lineinfo_output_buffer[sizeof(__FILE__) + 16];                   \
@@ -46,6 +57,7 @@
     }                                                                          \
   }
 
+#undef ALIGN_UP
 #define ALIGN_UP(num, alignment)                                               \
   CONDITIONAL(num + (alignment - (num % alignment)) % alignment == 0,          \
               num + (alignment - (num % alignment)) - alignment,               \

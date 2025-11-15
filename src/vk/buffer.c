@@ -7,11 +7,13 @@
 
 #include "debug.h"
 #include "fpx3d.h"
-#include "vk/buffer.h"
+#include "macros.h"
 #include "vk/command.h"
 #include "vk/logical_gpu.h"
 #include "vk/utility.h"
 #include "volk/volk.h"
+
+#include "vk/buffer.h"
 
 extern VkCommandBuffer __fpx3d_vk_begin_temp_command_buffer(VkCommandPool,
                                                             VkDevice);
