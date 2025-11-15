@@ -6,6 +6,8 @@
 #include <string.h>
 
 #include "fpx3d.h"
+#include "macros.h"
+
 #include "model/model.h"
 
 // vecX is an array of X floats

@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "fpx3d.h"
+#include "macros.h"
+
 #include "vk/vertex.h"
 
 extern Fpx3d_E_Result __fpx3d_realloc_array(void **arr_ptr, size_t obj_size,
