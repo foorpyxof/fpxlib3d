@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 #include "../fpx3d.h"
-#include "typedefs.h"
+#include "./typedefs.h"
 
 #include "../../modules/cglm/include/cglm/types.h"
 
