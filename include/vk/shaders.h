@@ -48,6 +48,9 @@ struct _fpx3d_vk_shader_modules {
   struct fpx3d_vulkan_shader_module fragment;
 };
 
+Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_data(const uint8_t *spirv_bytes,
+                                            size_t spirv_length,
+                                            Fpx3d_Vk_E_ShaderStage stage);
 Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
                                             Fpx3d_Vk_E_ShaderStage stage);
 Fpx3d_E_Result fpx3d_vk_destroy_spirv_file(Fpx3d_Vk_SpirvFile *);

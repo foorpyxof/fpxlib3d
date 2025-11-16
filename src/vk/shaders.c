@@ -11,6 +11,7 @@
 #include "debug.h"
 #include "macros.h"
 #include "vk/logical_gpu.h"
+#include "vk/typedefs.h"
 #include "volk/volk.h"
 
 #include "vk/shaders.h"
@@ -21,6 +22,19 @@ static VkShaderModule _new_shader_module(Fpx3d_Vk_LogicalGpu *lgpu,
 static VkShaderModule *_select_module_stage(Fpx3d_Vk_ShaderModuleSet *set,
                                             Fpx3d_Vk_E_ShaderStage stage);
 // end of static declarations -------------------------------------
+
+Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_data(const uint8_t *spirv_bytes,
+                                            size_t spirv_length,
+                                            Fpx3d_Vk_E_ShaderStage stage) {
+  Fpx3d_Vk_SpirvFile retval = {0};
+
+  retval.buffer = (uint8_t *)calloc(spirv_length + (4 - (spirv_length % 4)), 1);
+  memcpy(retval.buffer, spirv_bytes, spirv_length);
+  retval.filesize = spirv_length;
+  retval.stage = stage;
+
+  return retval;
+}
 
 Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
                                             Fpx3d_Vk_E_ShaderStage stage) {
@@ -62,19 +76,18 @@ Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
 
   rewind(fp);
 
-  FPX3D_DEBUG("Found file \"%s\" (%d bytes)", filename, size);
+  // FPX3D_DEBUG("Found file \"%s\" (%d bytes)", filename, size);
 
-  // align to 4 bytes (sizeof uint32_t) because the shader module reads it
+  // align to 4 bytes because the shader module reads it
   // using a uint32_t pointer for some reason
-  retval.buffer =
-      (uint8_t *)malloc(size + (sizeof(uint32_t) - (size % sizeof(uint32_t))));
-  if (NULL == retval.buffer) {
+  uint8_t *temp_buffer = (uint8_t *)malloc(size + (4 - (size % 4)));
+  if (NULL == temp_buffer) {
     perror("malloc()");
     fclose(fp);
     return retval;
   }
 
-  size_t readcount = fread(retval.buffer, 1, size, fp);
+  size_t readcount = fread(temp_buffer, 1, size, fp);
   if (size > (int)readcount) {
     FPX3D_WARN(
         "Read too little from SPIR-V file (expected %d; got %" LONG_FORMAT "u)",
@@ -87,15 +100,15 @@ Fpx3d_Vk_SpirvFile fpx3d_vk_read_spirv_file(const char *filename,
       FPX3D_WARN("File EOF? -> %d | File ERR? -> %d", has_eof, has_err);
     }
 
-    FREE_SAFE(retval.buffer);
+    FREE_SAFE(temp_buffer);
     fclose(fp);
     return retval;
   }
 
-  retval.filesize = size;
-  retval.stage = stage;
-
   fclose(fp);
+
+  retval = fpx3d_vk_read_spirv_data(temp_buffer, size, stage);
+  FREE_SAFE(temp_buffer);
 
   return retval;
 }
