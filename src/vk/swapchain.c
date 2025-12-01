@@ -215,10 +215,10 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
   for (size_t _iter = 0; _iter < frame_count; ++_iter) {                       \
     if (VK_NULL_HANDLE != views[_iter])                                        \
       vkDestroyImageView(lgpu->handle, views[_iter], NULL);                    \
-    FREE_SAFE(images[_iter]);                                                  \
-    FREE_SAFE(views[_iter]);                                                   \
-    vkDestroySwapchainKHR(lgpu->handle, new_swapchain, NULL);                  \
-  }
+  }                                                                            \
+  FREE_SAFE(images);                                                           \
+  FREE_SAFE(views);                                                            \
+  vkDestroySwapchainKHR(lgpu->handle, new_swapchain, NULL);
 
   for (uint32_t i = 0; i < frame_count; ++i) {
     Fpx3d_Vk_Image temp = {
@@ -281,6 +281,9 @@ fpx3d_vk_create_swapchain(Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu,
       frames[i].image = images[i];
       frames[i].view = views[i];
     }
+
+    FREE_SAFE(images);
+    FREE_SAFE(views);
 
     VkSemaphore sema = VK_NULL_HANDLE;
 
