@@ -16,6 +16,9 @@ NVIDIA on Wayland has known issues.
 AMD on Wayland is fine, except AMD doesn't care about an outdated swapchain frame.
 Either way, NVIDIA on X11 works fully as intended
 
+Both providers on Wayland seem to like to segmentation-fault when destroying a swapchain.
+Still looking to fix this from happening, since it's probably a bug here rather than in Wayland lol.
+
 
 ## 2. Build from source <a name="build_from_source"></a>
 

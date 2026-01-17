@@ -87,7 +87,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_shapebuffer(Fpx3d_Vk_LogicalGpu *lgpu,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_Vk_Shape fpx3d_vk_create_shape(Fpx3d_Vk_ShapeBuffer *buffer) {
+Fpx3d_Vk_Shape fpx3d_vk_create_shape(const Fpx3d_Vk_ShapeBuffer *buffer) {
   Fpx3d_Vk_Shape retval = {0};
   NULL_CHECK(buffer, retval);
 

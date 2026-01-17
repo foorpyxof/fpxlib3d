@@ -24,7 +24,7 @@ struct _fpx3d_vk_shapebuffer {
    // already been created
 
 struct _fpx3d_vk_shape {
-  Fpx3d_Vk_ShapeBuffer *shapeBuffer;
+  const Fpx3d_Vk_ShapeBuffer *shapeBuffer;
 
   struct {
     Fpx3d_Vk_DescriptorSet *inFlightDescriptorSets;
@@ -41,7 +41,7 @@ Fpx3d_E_Result fpx3d_vk_create_shapebuffer(Fpx3d_Vk_Context *,
 Fpx3d_E_Result fpx3d_vk_destroy_shapebuffer(Fpx3d_Vk_LogicalGpu *,
                                             Fpx3d_Vk_ShapeBuffer *);
 
-Fpx3d_Vk_Shape fpx3d_vk_create_shape(Fpx3d_Vk_ShapeBuffer *buffer);
+Fpx3d_Vk_Shape fpx3d_vk_create_shape(const Fpx3d_Vk_ShapeBuffer *buffer);
 Fpx3d_E_Result fpx3d_vk_destroy_shape(Fpx3d_Vk_Shape *, Fpx3d_Vk_Context *,
                                       Fpx3d_Vk_LogicalGpu *);
 
