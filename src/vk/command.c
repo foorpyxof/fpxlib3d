@@ -250,6 +250,13 @@ Fpx3d_E_Result fpx3d_vk_record_drawing_commandbuffer(
 
   NULL_CHECK(pipeline->handle, FPX3D_VK_PIPELINE_INVALID_ERROR);
   NULL_CHECK(pipeline->graphics.renderPassReference, FPX3D_NULLPTR_ERROR);
+
+  if (NULL == pipeline->bindings.inFlightDescriptorSets) {
+    FPX3D_TODO("error message pertaining the lack of (in flight) descriptor "
+               "sets. for now we just return a generic error code");
+  }
+  NULL_CHECK(pipeline->bindings.inFlightDescriptorSets, FPX3D_NULLPTR_ERROR);
+
   NULL_CHECK(swapchain->swapchain, FPX3D_VK_SWAPCHAIN_INVALID_ERROR);
 
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
