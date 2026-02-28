@@ -12,6 +12,7 @@
 #include "model/model.h"
 #include "model/typedefs.h"
 #include "vk.h"
+#include "vk/swapchain.h"
 #include "vk/typedefs.h"
 #include "window/window.h"
 
@@ -277,6 +278,8 @@ Fpx3d_Vk_RenderPass *render_pass = NULL;
 GLFWwindow *glfw_window = NULL;
 VkSurfaceKHR glfw_surface = VK_NULL_HANDLE;
 
+static void s_glfw_resize_callback(GLFWwindow *, int width, int height);
+
 void glfw_setup(void) {
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
@@ -299,6 +302,7 @@ void glfw_setup(void) {
   vk_ctx.vkSurface = glfw_surface;
 
   fpx3d_wnd_set_window_pointer(vk_ctx.windowContext, glfw_window);
+  glfwSetWindowSizeCallback(glfw_window, s_glfw_resize_callback);
 }
 
 void glfw_teardown(void) {
@@ -868,4 +872,11 @@ static struct fpx3d_wnd_dimensions _wnd_size(void *ptr) {
   retval.height = h;
 
   return retval;
+}
+
+static void s_glfw_resize_callback(GLFWwindow *win, int width, int height) {
+  UNUSED(win);
+  UNUSED(width);
+  UNUSED(height);
+  fpx3d_vk_refresh_current_swapchain(&vk_ctx, lgpu);
 }

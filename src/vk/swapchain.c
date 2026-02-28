@@ -672,8 +672,6 @@ Fpx3d_E_Result __fpx3d_vk_destroy_swapchain(Fpx3d_Vk_LogicalGpu *lgpu,
   if (VK_NULL_HANDLE != sc->swapchain)
     vkDestroySwapchainKHR(lgpu->handle, sc->swapchain, NULL);
 
-  fpx3d_vk_destroy_image(&sc->depthImage, lgpu);
-
   memset(sc, 0, sizeof(*sc));
 
   return FPX3D_SUCCESS;
