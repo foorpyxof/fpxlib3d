@@ -25,9 +25,9 @@ extern Fpx3d_E_Result __fpx3d_realloc_array(void **array_ptr, size_t obj_size,
                                             size_t *old_capacity);
 
 Fpx3d_Vk_PipelineLayout
-fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_DescriptorSetLayout *ds_layouts,
+fpx3d_vk_create_pipeline_layout(const Fpx3d_Vk_DescriptorSetLayout *ds_layouts,
                                 size_t ds_layout_count,
-                                Fpx3d_Vk_LogicalGpu *lgpu) {
+                                const Fpx3d_Vk_LogicalGpu *lgpu) {
   Fpx3d_Vk_PipelineLayout retval = {0};
 
   NULL_CHECK(lgpu, retval);
@@ -95,8 +95,9 @@ fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_DescriptorSetLayout *ds_layouts,
   return retval;
 }
 
-Fpx3d_E_Result fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_PipelineLayout *layout,
-                                                Fpx3d_Vk_LogicalGpu *lgpu) {
+Fpx3d_E_Result
+fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_PipelineLayout *layout,
+                                 const Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(layout, FPX3D_ARGS_ERROR);
 
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
@@ -105,6 +106,8 @@ Fpx3d_E_Result fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_PipelineLayout *layout,
   if (VK_NULL_HANDLE != layout->handle && layout->isValid) {
     vkDestroyPipelineLayout(lgpu->handle, layout->handle, NULL);
   }
+
+  memset(layout, 0, sizeof(*layout));
 
   return FPX3D_SUCCESS;
 }
@@ -120,9 +123,10 @@ Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *lgpu,
 }
 
 Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
-    Fpx3d_Vk_LogicalGpu *lgpu, size_t index, Fpx3d_Vk_PipelineLayout *p_layout,
-    Fpx3d_Vk_RenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
-    Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count) {
+    Fpx3d_Vk_LogicalGpu *lgpu, size_t index,
+    const Fpx3d_Vk_PipelineLayout *p_layout, Fpx3d_Vk_RenderPass *render_pass,
+    const Fpx3d_Vk_ShaderModuleSet *shaders,
+    const Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count) {
   NULL_CHECK(lgpu, FPX3D_ARGS_ERROR);
   NULL_CHECK(shaders, FPX3D_ARGS_ERROR);
   NULL_CHECK(render_pass, FPX3D_ARGS_ERROR);
@@ -380,7 +384,7 @@ Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
   return retval;
 }
 
-Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
+Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(const Fpx3d_Vk_LogicalGpu *lgpu,
                                             size_t index) {
   NULL_CHECK(lgpu, NULL);
   NULL_CHECK(lgpu->pipelines, NULL);
@@ -435,7 +439,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *lgpu,
   return FPX3D_SUCCESS;
 }
 
-Fpx3d_E_Result fpx3d_vk_assign_shapes_to_pipeline(Fpx3d_Vk_Shape **shapes,
+Fpx3d_E_Result fpx3d_vk_assign_shapes_to_pipeline(const Fpx3d_Vk_Shape **shapes,
                                                   size_t count,
                                                   Fpx3d_Vk_Pipeline *pipeline) {
   NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);

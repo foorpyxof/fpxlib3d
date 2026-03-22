@@ -601,14 +601,11 @@ void create_pipelines(void) {
 
 void create_shape_descriptors(void) {
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
-      &square_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
-      ds_layout_shape, &vk_ctx, lgpu));
+      &square_shape, object_ds_bindings, ds_layout_shape, &vk_ctx, lgpu));
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
-      &triangle_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
-      ds_layout_shape, &vk_ctx, lgpu));
+      &triangle_shape, object_ds_bindings, ds_layout_shape, &vk_ctx, lgpu));
   FATAL_FAIL(fpx3d_vk_create_shape_descriptors(
-      &pyramid_shape, object_ds_bindings, ARRAY_SIZE(object_ds_bindings),
-      ds_layout_shape, &vk_ctx, lgpu));
+      &pyramid_shape, object_ds_bindings, ds_layout_shape, &vk_ctx, lgpu));
 }
 
 void create_duplicate_shapes(void) {
@@ -622,8 +619,7 @@ void create_duplicate_shapes(void) {
 
 void create_pipeline_descriptors(void) {
   FATAL_FAIL(fpx3d_vk_create_pipeline_descriptors(
-      pipeline, pipeline_ds_bindings, ARRAY_SIZE(pipeline_ds_bindings), &vk_ctx,
-      lgpu));
+      pipeline, pipeline_ds_bindings, &vk_ctx, lgpu));
 }
 
 void destroy_vulkan(void) {
@@ -649,8 +645,8 @@ int vulkan_main(int argc, char **argv) {
   Fpx3d_Vk_Shape *shapes[] = {&pyramid_shape, &triangle_shape, &square_shape,
                               &square_dupe};
 
-  PRINT_FAILURE(
-      fpx3d_vk_assign_shapes_to_pipeline(shapes, ARRAY_SIZE(shapes), pipeline));
+  PRINT_FAILURE(fpx3d_vk_assign_shapes_to_pipeline(
+      (const Fpx3d_Vk_Shape **)shapes, ARRAY_SIZE(shapes), pipeline));
 
   struct vp_descriptor view_projection = {0};
 

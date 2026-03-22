@@ -84,7 +84,7 @@ fpx3d_vk_create_descriptor_set_layout(Fpx3d_Vk_DescriptorSetBinding *bindings,
   FREE_SAFE(layout_binds);
 
   retval.bindingCount = binding_count;
-  retval.isValid = true;
+  retval.isValid = retval.handle != VK_NULL_HANDLE;
 
   return retval;
 }
@@ -279,7 +279,7 @@ Fpx3d_E_Result fpx3d_vk_destroy_descriptor_set(Fpx3d_Vk_DescriptorSet *set,
 
 Fpx3d_E_Result fpx3d_vk_create_pipeline_descriptors(
     Fpx3d_Vk_Pipeline *pipeline, Fpx3d_Vk_DescriptorSetBinding *bindings,
-    size_t binding_count, Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
+    Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(pipeline, FPX3D_ARGS_ERROR);
   NULL_CHECK(bindings, FPX3D_ARGS_ERROR);
 
@@ -295,11 +295,12 @@ Fpx3d_E_Result fpx3d_vk_create_pipeline_descriptors(
   }
 
   for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
-    pipeline->bindings
-        .inFlightDescriptorSets[i] = fpx3d_vk_create_descriptor_set(
-        bindings, binding_count,
-        &pipeline->layout.descriptorSetLayouts[DESCRIPTOR_SET_INDEX_PIPELINE],
-        lgpu, ctx);
+    Fpx3d_Vk_DescriptorSetLayout *pl_ds_layout =
+        &(pipeline->layout.descriptorSetLayouts[DESCRIPTOR_SET_INDEX_PIPELINE]);
+
+    pipeline->bindings.inFlightDescriptorSets[i] =
+        fpx3d_vk_create_descriptor_set(bindings, pl_ds_layout->bindingCount,
+                                       pl_ds_layout, lgpu, ctx);
 
     if (false == pipeline->bindings.inFlightDescriptorSets[i].isValid) {
       for (size_t j = 0; j < i; ++j)
@@ -364,8 +365,8 @@ Fpx3d_E_Result fpx3d_vk_update_pipeline_descriptor(Fpx3d_Vk_Pipeline *pipeline,
 
 Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
     Fpx3d_Vk_Shape *shape, Fpx3d_Vk_DescriptorSetBinding *bindings,
-    size_t binding_count, Fpx3d_Vk_DescriptorSetLayout *ds_layout,
-    Fpx3d_Vk_Context *ctx, Fpx3d_Vk_LogicalGpu *lgpu) {
+    Fpx3d_Vk_DescriptorSetLayout *ds_layout, Fpx3d_Vk_Context *ctx,
+    Fpx3d_Vk_LogicalGpu *lgpu) {
   NULL_CHECK(shape, FPX3D_ARGS_ERROR);
   NULL_CHECK(bindings, FPX3D_ARGS_ERROR);
   NULL_CHECK(ds_layout, FPX3D_ARGS_ERROR);
@@ -388,7 +389,7 @@ Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
 
   for (size_t i = 0; i < ctx->constants.maxFramesInFlight; ++i) {
     shape->bindings.inFlightDescriptorSets[i] = fpx3d_vk_create_descriptor_set(
-        bindings, binding_count, ds_layout, lgpu, ctx);
+        bindings, ds_layout->bindingCount, ds_layout, lgpu, ctx);
 
     if (false == shape->bindings.inFlightDescriptorSets[i].isValid) {
       for (size_t j = 0; j < i; ++j)

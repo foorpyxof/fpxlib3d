@@ -171,7 +171,6 @@ Fpx3d_Vk_Shape fpx3d_vk_duplicate_shape(Fpx3d_Vk_Shape *subject,
     if (FPX3D_SUCCESS !=
         fpx3d_vk_create_shape_descriptors(
             &retval, bindings,
-            subject->bindings.inFlightDescriptorSets->bindingCount,
             subject->bindings.inFlightDescriptorSets->layoutReference, ctx,
             lgpu)) {
       fpx3d_vk_destroy_shape(&retval, ctx, lgpu);

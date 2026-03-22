@@ -64,9 +64,10 @@ Fpx3d_Vk_DescriptorSet fpx3d_vk_create_descriptor_set(
 Fpx3d_E_Result fpx3d_vk_destroy_descriptor_set(Fpx3d_Vk_DescriptorSet *,
                                                Fpx3d_Vk_LogicalGpu *);
 
-Fpx3d_E_Result fpx3d_vk_create_pipeline_descriptors(
-    Fpx3d_Vk_Pipeline *, Fpx3d_Vk_DescriptorSetBinding *bindings,
-    size_t binding_count, Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *);
+Fpx3d_E_Result
+fpx3d_vk_create_pipeline_descriptors(Fpx3d_Vk_Pipeline *,
+                                     Fpx3d_Vk_DescriptorSetBinding *bindings,
+                                     Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *);
 
 // NOTE: depending on the type of the binding, the value of the `void *value`
 // argument must differ between:
@@ -79,8 +80,7 @@ Fpx3d_E_Result fpx3d_vk_update_pipeline_descriptor(Fpx3d_Vk_Pipeline *,
 
 Fpx3d_E_Result fpx3d_vk_create_shape_descriptors(
     Fpx3d_Vk_Shape *, Fpx3d_Vk_DescriptorSetBinding *bindings,
-    size_t binding_count, Fpx3d_Vk_DescriptorSetLayout *, Fpx3d_Vk_Context *,
-    Fpx3d_Vk_LogicalGpu *);
+    Fpx3d_Vk_DescriptorSetLayout *, Fpx3d_Vk_Context *, Fpx3d_Vk_LogicalGpu *);
 
 // NOTE: depending on the type of the binding, the value of the `void *value`
 // argument must differ between:

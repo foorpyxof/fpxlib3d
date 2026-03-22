@@ -51,24 +51,26 @@ struct _fpx3d_vk_pipeline {
 //  using higher descriptor sets is not currently supported
 //
 Fpx3d_Vk_PipelineLayout
-fpx3d_vk_create_pipeline_layout(Fpx3d_Vk_DescriptorSetLayout *ds_layouts,
-                                size_t ds_layout_count, Fpx3d_Vk_LogicalGpu *);
+fpx3d_vk_create_pipeline_layout(const Fpx3d_Vk_DescriptorSetLayout *ds_layouts,
+                                size_t ds_layout_count,
+                                const Fpx3d_Vk_LogicalGpu *);
 Fpx3d_E_Result fpx3d_vk_destroy_pipeline_layout(Fpx3d_Vk_PipelineLayout *,
-                                                Fpx3d_Vk_LogicalGpu *);
+                                                const Fpx3d_Vk_LogicalGpu *);
 
 Fpx3d_E_Result fpx3d_vk_allocate_pipelines(Fpx3d_Vk_LogicalGpu *,
                                            size_t amount);
 
 Fpx3d_E_Result fpx3d_vk_create_graphics_pipeline_at(
-    Fpx3d_Vk_LogicalGpu *, size_t index, Fpx3d_Vk_PipelineLayout *p_layout,
-    Fpx3d_Vk_RenderPass *render_pass, Fpx3d_Vk_ShaderModuleSet *shaders,
-    Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count);
-Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(Fpx3d_Vk_LogicalGpu *,
+    Fpx3d_Vk_LogicalGpu *, size_t index,
+    const Fpx3d_Vk_PipelineLayout *p_layout, Fpx3d_Vk_RenderPass *render_pass,
+    const Fpx3d_Vk_ShaderModuleSet *shaders,
+    const Fpx3d_Vk_VertexBinding *vertex_bindings, size_t vertex_bind_count);
+Fpx3d_Vk_Pipeline *fpx3d_vk_get_pipeline_at(const Fpx3d_Vk_LogicalGpu *,
                                             size_t index);
 Fpx3d_E_Result fpx3d_vk_destroy_pipeline_at(Fpx3d_Vk_LogicalGpu *, size_t index,
                                             Fpx3d_Vk_Context *);
 
-Fpx3d_E_Result fpx3d_vk_assign_shapes_to_pipeline(Fpx3d_Vk_Shape **shapes,
+Fpx3d_E_Result fpx3d_vk_assign_shapes_to_pipeline(const Fpx3d_Vk_Shape **shapes,
                                                   size_t count,
                                                   Fpx3d_Vk_Pipeline *);
 
